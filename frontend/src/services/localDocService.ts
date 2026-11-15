@@ -543,31 +543,130 @@ class LocalDocService {
    * Selection acts strictly as a boundary hint for verification and student detection.
    */
   async manualDetect(input: ManualSelectionInput): Promise<ManualDetectionResult> {
+    let result: ManualDetectionResult;
+
     if (isNativePlatform()) {
       let doc = this.docCache.get(input.documentId);
       if (!doc) {
         await this.refreshNativeCache();
         doc = this.docCache.get(input.documentId);
       }
-      return await DocMorphNative.manualDetect({
+      result = await DocMorphNative.manualDetect({
         ...input,
         filePath: input.filePath || doc?.originalPath || undefined,
       });
+    } else {
+      // Web Fallback Mock for development
+      result = {
+        documentId: input.documentId,
+        pageIndex: input.pageIndex,
+        selectionType: input.selectionType,
+        resolvedPdfBox: input.rawBbox || [0, 0, 0, 0],
+        extractedText: input.selectedText || 'Web development manual selection',
+        footerStatus: 'FOOTER_CONFIRMED',
+        confidence: 0.88,
+        candidates: [
+          {
+            id: `field_man_${Date.now()}`,
+            fieldType: 'student_name',
+            detectedText: input.selectedText || 'Detected Student',
+            confidence: 0.88,
+            pageIndex: input.pageIndex,
+            normalizedBox: [50, 900, 250, 930],
+            pdfPointBox: [50, 750, 250, 770],
+            requiresConfirmation: false,
+          },
+        ],
+        negativeReasons: [],
+        summaryMessage: 'Smart manual detection (web mock)',
+      };
     }
 
-    // Web Fallback Mock for development
-    return {
-      documentId: input.documentId,
-      pageIndex: input.pageIndex,
-      selectionType: input.selectionType,
-      resolvedPdfBox: input.rawBbox || [0, 0, 0, 0],
-      extractedText: input.selectedText || 'Web development manual selection',
-      footerStatus: 'FOOTER_CONFIRMED',
-      confidence: 0.88,
-      candidates: [],
-      negativeReasons: [],
-      summaryMessage: 'Smart manual detection (web mock)',
-    };
+    // Phase E: If confirmed, incorporate candidate fields into detection caches for personalization!
+    if (result.footerStatus === 'FOOTER_CONFIRMED' && result.candidates.length > 0) {
+      const existing = this.candidateCache.get(input.documentId) || [];
+      const filtered = existing.filter(
+        (old) => !result.candidates.some((n) => n.pageIndex === old.pageIndex && n.fieldType === old.fieldType)
+      );
+      this.candidateCache.set(input.documentId, [...filtered, ...result.candidates]);
+
+      let cachedResp = this.detectionResponseCache.get(input.documentId);
+      if (!cachedResp) {
+        cachedResp = {
+          document_id: input.documentId,
+          status: 'awaiting_review',
+          fields: [],
+          summary: {
+            total_fields: 0,
+            high_confidence: 0,
+            medium_confidence: 0,
+            low_confidence: 0,
+            review_required: 0,
+            conflicts_count: 0,
+          },
+        };
+        this.detectionResponseCache.set(input.documentId, cachedResp);
+      }
+
+      for (const c of result.candidates) {
+        const fieldId = c.id;
+        const existingFieldIdx = cachedResp.fields.findIndex(
+          (f) => f.field_type === c.fieldType && f.pages.includes(c.pageIndex + 1)
+        );
+
+        const newField: DetectionField = {
+          id: fieldId,
+          field_id: fieldId,
+          field_type: c.fieldType as any,
+          original_value: c.detectedText,
+          suggested_value: c.detectedText,
+          corrected_value: c.replacementText || null,
+          confidence: c.confidence,
+          confidence_level: c.confidence >= 0.8 ? 'high' : 'medium',
+          review_status: c.requiresConfirmation ? 'pending' : 'confirmed',
+          is_ambiguous: c.requiresConfirmation,
+          reasons: ['Smart Manual Selection verified'],
+          occurrences_count: 1,
+          pages: [c.pageIndex + 1],
+          occurrences: [
+            {
+              page_number: c.pageIndex + 1,
+              raw_text: c.detectedText,
+              bbox: {
+                x0: c.normalizedBox[0],
+                y0: c.normalizedBox[1],
+                x1: c.normalizedBox[2],
+                y1: c.normalizedBox[3],
+              },
+              value_bbox: {
+                x0: c.normalizedBox[0],
+                y0: c.normalizedBox[1],
+                x1: c.normalizedBox[2],
+                y1: c.normalizedBox[3],
+              },
+              label_bbox: {
+                x0: c.normalizedBox[0],
+                y0: c.normalizedBox[1],
+                x1: c.normalizedBox[2],
+                y1: c.normalizedBox[3],
+              },
+            },
+          ],
+        };
+
+        if (existingFieldIdx >= 0) {
+          cachedResp.fields[existingFieldIdx] = newField;
+        } else {
+          cachedResp.fields.push(newField);
+        }
+      }
+
+      cachedResp.summary.total_fields = cachedResp.fields.length;
+      cachedResp.summary.high_confidence = cachedResp.fields.filter((f) => f.confidence_level === 'high').length;
+      cachedResp.summary.medium_confidence = cachedResp.fields.filter((f) => f.confidence_level === 'medium').length;
+    }
+
+    return result;
   }
 
   /**

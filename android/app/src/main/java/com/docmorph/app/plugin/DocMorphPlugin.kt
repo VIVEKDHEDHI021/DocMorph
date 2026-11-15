@@ -4,11 +4,12 @@ import android.net.Uri
 import com.docmorph.app.ai.OnnxLayoutInferenceService
 import com.docmorph.app.detection.DetectionCandidate
 import com.docmorph.app.detection.DetectionOrchestrator
+import com.docmorph.app.detection.FooterStatus
 import com.docmorph.app.detection.ManualSelectionInput
 import com.docmorph.app.detection.ProfileMatcher
 import com.docmorph.app.detection.SelectionType
 import com.docmorph.app.detection.SmartManualDetector
-import com.docmorph.app.pdf.NativeExtractionResult
+import com.docmorph.app.pdf.ExtractionResult
 import com.docmorph.app.pdf.PdfExtractorService
 import com.docmorph.app.pdf.PdfPersonalizerService
 import com.docmorph.app.pdf.PersonalizationCandidate
@@ -41,7 +42,7 @@ class DocMorphPlugin : Plugin() {
     // Cached candidates for fast profile re-matching
     private val candidateCache = mutableMapOf<String, List<DetectionCandidate>>()
     // Cached extraction results for manual selection analysis
-    private val extractionCache = mutableMapOf<String, NativeExtractionResult>()
+    private val extractionCache = mutableMapOf<String, ExtractionResult>()
 
     override fun load() {
         super.load()
@@ -403,6 +404,16 @@ class DocMorphPlugin : Plugin() {
 
                 val savedProfile = profileManager.getProfile()
                 val result = smartManualDetector.processSelection(input, pageData, savedProfile)
+
+                // Phase E: If manual selection confirmed fields, merge them into candidateCache for personalization!
+                if (result.footerStatus == FooterStatus.FOOTER_CONFIRMED && result.candidates.isNotEmpty()) {
+                    val existing = candidateCache[documentId]?.toMutableList() ?: mutableListOf()
+                    existing.removeAll { old ->
+                        result.candidates.any { new -> new.pageIndex == old.pageIndex && new.fieldType == old.fieldType }
+                    }
+                    existing.addAll(result.candidates)
+                    candidateCache[documentId] = existing
+                }
 
                 val ret = JSObject()
                 ret.put("documentId", result.documentId)
