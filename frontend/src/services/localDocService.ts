@@ -15,6 +15,8 @@ import {
   DocumentRecord,
   DetectionCandidate,
   isNativePlatform,
+  ManualSelectionInput,
+  ManualDetectionResult,
 } from './nativeDocMorph';
 import {
   DocumentItem,
@@ -534,6 +536,38 @@ class LocalDocService {
       }
     }
     return { success: true };
+  }
+
+  /**
+   * Phase C: Runs Smart Manual Detection on a specific page selection.
+   * Selection acts strictly as a boundary hint for verification and student detection.
+   */
+  async manualDetect(input: ManualSelectionInput): Promise<ManualDetectionResult> {
+    if (isNativePlatform()) {
+      let doc = this.docCache.get(input.documentId);
+      if (!doc) {
+        await this.refreshNativeCache();
+        doc = this.docCache.get(input.documentId);
+      }
+      return await DocMorphNative.manualDetect({
+        ...input,
+        filePath: input.filePath || doc?.originalPath || undefined,
+      });
+    }
+
+    // Web Fallback Mock for development
+    return {
+      documentId: input.documentId,
+      pageIndex: input.pageIndex,
+      selectionType: input.selectionType,
+      resolvedPdfBox: input.rawBbox || [0, 0, 0, 0],
+      extractedText: input.selectedText || 'Web development manual selection',
+      footerStatus: 'FOOTER_CONFIRMED',
+      confidence: 0.88,
+      candidates: [],
+      negativeReasons: [],
+      summaryMessage: 'Smart manual detection (web mock)',
+    };
   }
 
   /**

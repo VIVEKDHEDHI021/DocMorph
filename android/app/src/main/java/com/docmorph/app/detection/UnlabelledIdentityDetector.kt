@@ -35,7 +35,13 @@ class UnlabelledIdentityDetector {
             "semester", "sem", "term", "class", "division", "batch", "signature", "sign",
             "remark", "grade", "marks", "evaluation", "assessment", "teacher", "instructor",
             "professor", "guide", "mentor", "hod", "head of department", "principal", "dean",
-            "topic", "title", "author", "docmorph", "study material", "lecture notes", "reference"
+            "topic", "title", "author", "authors", "edition", "editions", "published", "publisher",
+            "isbn", "issn", "docmorph", "study material", "lecture notes", "reference", "references",
+            "bibliography", "citation", "citations", "precaution", "precautions", "conclusion",
+            "conclusions", "result", "results", "observation", "observations", "experiment",
+            "experiments", "practical", "practicals", "assignment", "assignments", "exercise",
+            "exercises", "chapter", "chapters", "section", "sections", "unit", "units",
+            "problem", "problems", "solution", "solutions", "figure", "fig.", "table", "chart"
         )
 
         // Regex patterns for identity pairs

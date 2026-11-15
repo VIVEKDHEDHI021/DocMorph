@@ -4,7 +4,11 @@ import android.net.Uri
 import com.docmorph.app.ai.OnnxLayoutInferenceService
 import com.docmorph.app.detection.DetectionCandidate
 import com.docmorph.app.detection.DetectionOrchestrator
+import com.docmorph.app.detection.ManualSelectionInput
 import com.docmorph.app.detection.ProfileMatcher
+import com.docmorph.app.detection.SelectionType
+import com.docmorph.app.detection.SmartManualDetector
+import com.docmorph.app.pdf.NativeExtractionResult
 import com.docmorph.app.pdf.PdfExtractorService
 import com.docmorph.app.pdf.PdfPersonalizerService
 import com.docmorph.app.pdf.PersonalizationCandidate
@@ -31,10 +35,13 @@ class DocMorphPlugin : Plugin() {
     private lateinit var orchestrator: DetectionOrchestrator
     private lateinit var profileMatcher: ProfileMatcher
     private lateinit var personalizer: PdfPersonalizerService
+    private lateinit var smartManualDetector: SmartManualDetector
     private val scope = CoroutineScope(Dispatchers.IO)
 
     // Cached candidates for fast profile re-matching
     private val candidateCache = mutableMapOf<String, List<DetectionCandidate>>()
+    // Cached extraction results for manual selection analysis
+    private val extractionCache = mutableMapOf<String, NativeExtractionResult>()
 
     override fun load() {
         super.load()
@@ -46,6 +53,7 @@ class DocMorphPlugin : Plugin() {
         orchestrator = DetectionOrchestrator(onnxService)
         profileMatcher = ProfileMatcher()
         personalizer = PdfPersonalizerService(ctx)
+        smartManualDetector = SmartManualDetector()
     }
 
     override fun handleOnDestroy() {
@@ -261,10 +269,12 @@ class DocMorphPlugin : Plugin() {
             try {
                 // 1. Extract layout data (PDFBox with OCR fallback)
                 val extractionResult = extractor.extractDocument(documentId, filePath)
+                extractionCache[documentId] = extractionResult
                 val savedProfile = profileManager.getProfile()
 
-                // 2. Run multi-modal detection orchestrator
-                val candidates = orchestrator.analyzeDocument(pdfFile, extractionResult, savedProfile)
+                // 2. Run multi-modal detection orchestrator with Phase B footer verification
+                val orchestration = orchestrator.analyzeDocumentWithVerification(pdfFile, extractionResult, savedProfile)
+                val candidates = orchestration.candidates
                 candidateCache[documentId] = candidates
 
                 val ret = JSObject()
@@ -272,6 +282,15 @@ class DocMorphPlugin : Plugin() {
                 ret.put("totalPages", extractionResult.totalPages)
                 ret.put("isScanned", extractionResult.isScanned)
                 ret.put("candidates", serializeCandidates(candidates))
+
+                val fvObj = JSObject()
+                fvObj.put("status", orchestration.footerVerification.status.name)
+                fvObj.put("confidence", orchestration.footerVerification.confidence)
+                fvObj.put("confirmedPagesCount", orchestration.footerVerification.confirmedPagesCount)
+                fvObj.put("uncertainPagesCount", orchestration.footerVerification.uncertainPagesCount)
+                fvObj.put("notFoundPagesCount", orchestration.footerVerification.notFoundPagesCount)
+                fvObj.put("summaryMessage", orchestration.footerVerification.summaryMessage)
+                ret.put("footerVerification", fvObj)
 
                 call.resolve(ret)
             } catch (oom: OutOfMemoryError) {
@@ -308,6 +327,107 @@ class DocMorphPlugin : Plugin() {
             call.resolve(ret)
         } catch (e: Exception) {
             call.reject("Failed to match profile: ${e.message}", e)
+        }
+    }
+
+    @PluginMethod
+    fun manualDetect(call: PluginCall) {
+        val documentId = call.getString("documentId")
+        val filePath = call.getString("filePath")
+        val pageIndex = call.getInt("pageIndex") ?: 0
+        val selectionTypeStr = call.getString("selectionType") ?: "area"
+        val pageWidth = call.getDouble("pageWidth")?.toFloat() ?: 612f
+        val pageHeight = call.getDouble("pageHeight")?.toFloat() ?: 792f
+        val selectedText = call.getString("selectedText")
+
+        if (documentId.isNullOrBlank()) {
+            call.reject("documentId is required")
+            return
+        }
+
+        scope.launch {
+            try {
+                var extraction = extractionCache[documentId]
+                if (extraction == null && !filePath.isNullOrBlank()) {
+                    val file = File(filePath)
+                    if (file.exists()) {
+                        extraction = extractor.extractDocument(documentId, filePath)
+                        extractionCache[documentId] = extraction
+                    }
+                }
+
+                if (extraction == null) {
+                    call.reject("Document has not been analyzed yet and no valid filePath provided")
+                    return@launch
+                }
+
+                if (pageIndex < 0 || pageIndex >= extraction.pages.size) {
+                    call.reject("pageIndex $pageIndex out of range (0..${extraction.pages.size - 1})")
+                    return@launch
+                }
+
+                val pageData = extraction.pages[pageIndex]
+
+                val rawArray = call.getArray("rawBbox")
+                val rawBbox = if (rawArray != null && rawArray.length() == 4) {
+                    listOf(
+                        rawArray.getDouble(0).toFloat(),
+                        rawArray.getDouble(1).toFloat(),
+                        rawArray.getDouble(2).toFloat(),
+                        rawArray.getDouble(3).toFloat()
+                    )
+                } else null
+
+                val normArray = call.getArray("normalizedBox")
+                val normBbox = if (normArray != null && normArray.length() == 4) {
+                    listOf(
+                        normArray.getInt(0),
+                        normArray.getInt(1),
+                        normArray.getInt(2),
+                        normArray.getInt(3)
+                    )
+                } else null
+
+                val selType = if (selectionTypeStr.lowercase() == "text") SelectionType.TEXT else SelectionType.AREA
+
+                val input = ManualSelectionInput(
+                    documentId = documentId,
+                    pageIndex = pageIndex,
+                    selectionType = selType,
+                    rawBbox = rawBbox,
+                    normalizedBox = normBbox,
+                    selectedText = selectedText,
+                    pageWidth = pageWidth,
+                    pageHeight = pageHeight
+                )
+
+                val savedProfile = profileManager.getProfile()
+                val result = smartManualDetector.processSelection(input, pageData, savedProfile)
+
+                val ret = JSObject()
+                ret.put("documentId", result.documentId)
+                ret.put("pageIndex", result.pageIndex)
+                ret.put("selectionType", result.selectionType.name.lowercase())
+
+                val boxArr = JSArray()
+                result.resolvedPdfBox.forEach { boxArr.put(it) }
+                ret.put("resolvedPdfBox", boxArr)
+
+                ret.put("extractedText", result.extractedText)
+                ret.put("footerStatus", result.footerStatus.name)
+                ret.put("confidence", result.confidence)
+                ret.put("candidates", serializeCandidates(result.candidates))
+
+                val negArr = JSArray()
+                result.negativeReasons.forEach { negArr.put(it) }
+                ret.put("negativeReasons", negArr)
+
+                ret.put("summaryMessage", result.summaryMessage)
+
+                call.resolve(ret)
+            } catch (e: Exception) {
+                call.reject("Manual detection failed: ${e.message}", e)
+            }
         }
     }
 

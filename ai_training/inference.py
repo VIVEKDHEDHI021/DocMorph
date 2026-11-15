@@ -4,11 +4,13 @@ Receives intermediate document representations, applies layout-aware model predi
 and reconstructs structured identity entities and footer regions with explainable evidence.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 import json
 from pathlib import Path
 import re
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
 import joblib
 import numpy as np
 
@@ -20,8 +22,9 @@ from app.schemas.detection_data import (
     FieldOccurrence,
     FieldType,
 )
-from app.services.value_extractor import ExtractedFieldValue
-from app.services.hybrid_pdf_pipeline import ExtractedToken, PageRepresentation
+
+if TYPE_CHECKING:
+    from app.services.hybrid_pdf_pipeline import ExtractedToken, PageRepresentation
 
 
 @dataclass
@@ -117,6 +120,19 @@ class UniversalLayoutInferenceService:
             if curr_entity_type in ("enrollment_number", "roll_number", "student_id", "page_number"):
                 clean_val = re.sub(r"[\(\)\[\]\-|,;:]", "", val).strip()
 
+            if curr_entity_type == "student_name":
+                from app.services.unlabelled_identity_detector import UnlabelledIdentityDetector
+                if UnlabelledIdentityDetector.is_academic_term(clean_val):
+                    clean_val = ""
+                else:
+                    words = [w for w in re.split(r"[\s.\-]+", clean_val) if w]
+                    if len(words) < 2 and clean_val.lower() in (
+                        "conclusion", "conclusions", "references", "reference", "theory", "apparatus",
+                        "procedure", "observation", "result", "results", "discussion", "precautions",
+                        "experiment", "chapter", "section", "unit", "exercise", "edition", "author", "table"
+                    ):
+                        clean_val = ""
+
             if clean_val:
                 x0 = min(t.bbox[0] for t in sub_tokens)
                 y0 = min(t.bbox[1] for t in sub_tokens)
@@ -184,9 +200,20 @@ class UniversalLayoutInferenceService:
             y1 = t.bbox[3]
             is_footer = (y1 >= page_height * 0.75)
             clean = t.text.strip("()[]-|,.:")
+            lower_clean = clean.lower()
 
             if is_footer:
-                if clean.isdigit() and len(clean) in (1, 2, 3) and t.bbox[0] >= 400:
+                # Check negative academic / body terms
+                from app.services.unlabelled_identity_detector import UnlabelledIdentityDetector
+                is_stop = UnlabelledIdentityDetector.is_academic_term(clean) or lower_clean in (
+                    "conclusion", "conclusions", "references", "reference", "theory", "apparatus",
+                    "procedure", "observation", "result", "results", "discussion", "precautions",
+                    "experiment", "chapter", "section", "unit", "exercise", "edition", "author"
+                )
+                if is_stop:
+                    labels.append("O")
+                    confidences.append(0.95)
+                elif clean.isdigit() and len(clean) in (1, 2, 3) and t.bbox[0] >= 400:
                     labels.append("B-PAGE_NUMBER")
                     confidences.append(0.92)
                 elif clean.isdigit() and 8 <= len(clean) <= 15:

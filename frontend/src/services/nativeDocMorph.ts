@@ -87,6 +87,31 @@ export interface PersonalizationResult {
   warnings: string[];
 }
 
+export interface ManualSelectionInput {
+  documentId: string;
+  filePath?: string;
+  pageIndex: number;
+  selectionType: 'area' | 'text';
+  pageWidth: number;
+  pageHeight: number;
+  rawBbox?: number[]; // [x0, y0, x1, y1] in points
+  normalizedBox?: number[]; // [x0, y0, x1, y1] in [0, 1000]
+  selectedText?: string;
+}
+
+export interface ManualDetectionResult {
+  documentId: string;
+  pageIndex: number;
+  selectionType: 'area' | 'text';
+  resolvedPdfBox: number[];
+  extractedText: string;
+  footerStatus: 'FOOTER_CONFIRMED' | 'FOOTER_NOT_FOUND' | 'FOOTER_UNCERTAIN' | 'DOCUMENT_UNREADABLE';
+  confidence: number;
+  candidates: DetectionCandidate[];
+  negativeReasons: string[];
+  summaryMessage: string;
+}
+
 export interface DocMorphNativePlugin {
   saveProfile(options: {
     fullName: string;
@@ -115,6 +140,8 @@ export interface DocMorphNativePlugin {
     documentId: string;
     filePath: string;
   }): Promise<DocumentAnalysisResult>;
+
+  manualDetect(options: ManualSelectionInput): Promise<ManualDetectionResult>;
 
   matchProfile(options: {
     documentId: string;

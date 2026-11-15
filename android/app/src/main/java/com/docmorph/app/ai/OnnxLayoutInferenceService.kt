@@ -4,6 +4,7 @@ import android.content.Context
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
+import com.docmorph.app.detection.UnlabelledIdentityDetector
 import java.io.InputStream
 import java.nio.FloatBuffer
 import kotlin.math.max
@@ -129,6 +130,16 @@ class OnnxLayoutInferenceService(private val context: Context) {
                 cleanVal = rawVal.replace(Regex("[()\\[\\]\\-|,;:]"), "").trim()
             }
 
+            if (currEntityType == "student_name") {
+                val words = cleanVal.split(Regex("[\\s.\\-]+")).filter { it.isNotEmpty() }
+                val isAcademic = UnlabelledIdentityDetector.ACADEMIC_STOP_WORDS.any { stop ->
+                    cleanVal.lowercase().contains(stop)
+                }
+                if (isAcademic || words.size < 2) {
+                    cleanVal = ""
+                }
+            }
+
             if (cleanVal.isNotEmpty()) {
                 var minX = Int.MAX_VALUE
                 var minY = Int.MAX_VALUE
@@ -214,8 +225,19 @@ class OnnxLayoutInferenceService(private val context: Context) {
             val y1 = b[3].toFloat()
             val isFooter = (y1 >= footerThresholdY)
             val clean = t.trim('(', ')', '[', ']', '-', '|', ',', '.', ':')
+            val cleanLower = clean.lowercase()
 
-            if (isFooter) {
+            val isStopWord = UnlabelledIdentityDetector.ACADEMIC_STOP_WORDS.any { stop ->
+                if (stop.contains(" ")) cleanLower.contains(stop) else cleanLower == stop
+            } || cleanLower in setOf(
+                "conclusion", "conclusions", "reference", "references", "theory", "apparatus",
+                "procedure", "observation", "observations", "result", "results", "discussion",
+                "precautions", "precaution", "experiment", "experiments", "chapter", "chapters",
+                "section", "sections", "unit", "units", "exercise", "exercises", "edition",
+                "author", "authors", "published", "publisher", "isbn", "issn"
+            )
+
+            if (isFooter && !isStopWord) {
                 if (clean.all { it.isDigit() } && clean.length in 1..3 && b[0] >= 400) {
                     labels.add("B-PAGE_NUMBER")
                     confidences.add(0.92f)

@@ -254,6 +254,9 @@ class DetectionResult(BaseModel):
     detection_summary: DetectionSummary = Field(
         description="Summary statistics of the detection results"
     )
+    footer_verification: Optional[Any] = Field(
+        default=None, description="Detailed multi-signal footer verification outcome"
+    )
 
     def get_field(self, field_id: str) -> Optional[DetectedField]:
         """Retrieves a detected field by its field_id."""

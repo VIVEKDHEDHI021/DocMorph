@@ -35,6 +35,8 @@ from app.services.cross_page_analyzer import CrossPageAnalyzer
 from app.services.field_detector import FieldDetector
 from app.services.field_grouper import FieldGrouper
 from app.services.footer_detector import FooterDetector
+from app.services.footer_verifier import FooterVerifier
+from app.schemas.footer_verification import DocumentFooterVerification, FooterStatus
 from app.services.hybrid_pdf_pipeline import HybridPDFPipeline
 from app.services.text_segmenter import TextSegmenter
 from app.services.unlabelled_identity_detector import UnlabelledIdentityDetector
@@ -54,6 +56,7 @@ class DetectionEngine:
         """
         self.config = config
         self.footer_detector = FooterDetector(config=config)
+        self.footer_verifier = FooterVerifier(footer_detector=self.footer_detector)
         self.confidence_scorer = ConfidenceScorer(config=config)
         self.field_grouper = FieldGrouper(confidence_scorer=self.confidence_scorer)
         self.unlabelled_detector = UnlabelledIdentityDetector()
@@ -150,30 +153,49 @@ class DetectionEngine:
         total_pages = doc.page_count
         document_id = self._generate_document_id(filename, total_pages)
 
+        # 1. Segment structured lines for all pages
+        structured_pages = {
+            page_idx: TextSegmenter.segment_page(
+                page=page,
+                page_number=page_idx,
+            )
+            for page_idx, page in enumerate(doc, start=1)
+        }
+
+        # 2. Run dedicated Footer Verification Layer (Multi-signal layout, negative, multi-page)
+        footer_verification = self.footer_verifier.verify_document(
+            doc=doc,
+            structured_pages=structured_pages,
+        )
+
         all_extracted_values: list[ExtractedFieldValue] = []
 
         for page_idx, page in enumerate(doc, start=1):
             page_height = page.rect.height
-
-            # Layer 2: Extract structured text lines with spans and coordinates (Single-pass)
-            structured_lines = TextSegmenter.segment_page(
-                page=page,
-                page_number=page_idx,
+            structured_lines = structured_pages.get(page_idx, [])
+            page_verif = (
+                footer_verification.page_results[page_idx - 1]
+                if page_idx - 1 < len(footer_verification.page_results)
+                else None
             )
 
-            # Layer 1: Footer Region Identification (Adaptive boundary analysis)
-            all_line_bboxes = [line.bbox for line in structured_lines]
-            footer_boundary_y = self.footer_detector.detect_adaptive_footer_boundary(
-                all_line_bboxes, page_height
-            )
+            # Determine footer boundary strictly from verification layer
+            if page_verif and page_verif.status == FooterStatus.FOOTER_CONFIRMED:
+                footer_boundary_y = page_verif.boundary_y
+                has_page_footer = True
+            elif page_verif and page_verif.status == FooterStatus.FOOTER_UNCERTAIN:
+                footer_boundary_y = page_verif.boundary_y
+                has_page_footer = True
+            else:
+                footer_boundary_y = page_height * 0.96  # Negative/unconfirmed footer: reject bottom body text
+                has_page_footer = False
 
-            # Separator Line Detection (for confidence boosting)
-            separator_y = self.footer_detector.find_footer_separator_line(page)
+            separator_y = page_verif.separator_y if page_verif else self.footer_detector.find_footer_separator_line(page)
 
-            # Tag footer region membership based on adaptive boundary
+            # Tag footer region membership strictly based on verified boundary
             for line in structured_lines:
                 mid_y = (line.bbox.y0 + line.bbox.y1) / 2.0
-                line.is_in_footer = mid_y >= footer_boundary_y or line.bbox.y0 >= footer_boundary_y
+                line.is_in_footer = has_page_footer and (mid_y >= footer_boundary_y or line.bbox.y0 >= footer_boundary_y)
 
             # Track lines that produced explicit label detections to prevent redundant scanning
             matched_line_indices: set[int] = set()
@@ -211,33 +233,35 @@ class DetectionEngine:
                 )
                 all_extracted_values.extend(values)
 
-            # Pass 2: Unlabelled Student Identity Recognition in Lower/Footer Regions
-            for line_idx, line in enumerate(structured_lines):
-                if line_idx in matched_line_indices:
-                    continue
+            # Pass 2: Unlabelled Student Identity Recognition
+            # STRICTLY skipped if the page footer is NOT confirmed/uncertain (e.g. FOOTER_NOT_FOUND)
+            if has_page_footer:
+                for line_idx, line in enumerate(structured_lines):
+                    if line_idx in matched_line_indices:
+                        continue
+                    if not line.is_in_footer:
+                        continue
 
-                # Scan lower region (footer zone or bottom 40% of the page)
-                is_lower_region = line.is_in_footer or line.bbox.y0 >= (page_height * 0.60)
-                if not is_lower_region:
-                    continue
+                    unlabelled_values = self.unlabelled_detector.detect_in_line(
+                        line=line,
+                        page=page,
+                        separator_y=separator_y,
+                    )
+                    if unlabelled_values:
+                        if page_verif and page_verif.status == FooterStatus.FOOTER_UNCERTAIN:
+                            for uv in unlabelled_values:
+                                uv.confidence = min(0.70, uv.confidence)
+                        all_extracted_values.extend(unlabelled_values)
 
-                unlabelled_values = self.unlabelled_detector.detect_in_line(
-                    line=line,
-                    page=page,
-                    separator_y=separator_y,
-                )
-                if unlabelled_values:
-                    all_extracted_values.extend(unlabelled_values)
-
-        # Fallback: If no enrollment number has been found, execute a dedicated scan
-        # specifically on the bottom-left corner of each page for standard enrollment numbers.
-        has_enrollment = any(
-            ev.field_type == FieldType.ENROLLMENT_NUMBER for ev in all_extracted_values
-        )
-        if not has_enrollment:
-            fallback_enrollments = self.unlabelled_detector.scan_bottom_left_for_enrollment(doc)
-            if fallback_enrollments:
-                all_extracted_values.extend(fallback_enrollments)
+        # Fallback: Scan bottom-left ONLY if document has verified/uncertain footer!
+        if footer_verification.status in (FooterStatus.FOOTER_CONFIRMED, FooterStatus.FOOTER_UNCERTAIN):
+            has_enrollment = any(
+                ev.field_type == FieldType.ENROLLMENT_NUMBER for ev in all_extracted_values
+            )
+            if not has_enrollment:
+                fallback_enrollments = self.unlabelled_detector.scan_bottom_left_for_enrollment(doc)
+                if fallback_enrollments:
+                    all_extracted_values.extend(fallback_enrollments)
 
         # Pass 3: Layout-Aware Universal AI Document Understanding & Cross-Page Analysis
         try:
@@ -319,6 +343,7 @@ class DetectionEngine:
             detected_fields=detected_fields,
             conflicts=conflicts,
             detection_summary=summary,
+            footer_verification=footer_verification,
         )
 
     @staticmethod
