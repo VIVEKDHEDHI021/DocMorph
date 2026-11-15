@@ -637,6 +637,11 @@ export const WorkspacePage: React.FC = () => {
               <PdfViewer
                 documentId={documentId}
                 title={document.original_filename}
+                onSmartSelectResult={(result) => {
+                  if (result.footerStatus === 'FOOTER_CONFIRMED' && result.candidates.length > 0) {
+                    refetchDetections();
+                  }
+                }}
               />
             </div>
           </div>

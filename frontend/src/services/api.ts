@@ -14,6 +14,7 @@ import {
 } from '../types';
 import { localDocService } from './localDocService';
 import { profileStorage } from './profileStorage';
+import { ManualSelectionInput, ManualDetectionResult } from './nativeDocMorph';
 
 export function getApiBaseUrl(): string {
   return 'http://localhost';
@@ -143,6 +144,10 @@ class ApiClient {
 
     rejectField: async (documentId: string, fieldId: string): Promise<any> => {
       return localDocService.rejectField(documentId, fieldId);
+    },
+
+    manualDetect: async (input: ManualSelectionInput): Promise<ManualDetectionResult> => {
+      return localDocService.manualDetect(input);
     },
   };
 
