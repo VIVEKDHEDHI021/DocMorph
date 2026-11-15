@@ -1,0 +1,59 @@
+services:
+  # Database Service (PostgreSQL 16)
+  db:
+    image: postgres:16-alpine
+    container_name: docmorph_db
+    environment:
+      POSTGRES_USER: docmorph
+      POSTGRES_PASSWORD: docmorph_secure_password_2026
+      POSTGRES_DB: docmorph
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U docmorph -d docmorph"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Backend API Service (FastAPI)
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: docmorph_backend
+    environment:
+      DOCMORPH_ENVIRONMENT: production
+      DOCMORPH_DEBUG: "false"
+      DOCMORPH_SECRET_KEY: docmorph_production_jwt_secret_key_minimum_32chars_long!
+      DOCMORPH_DATABASE_URL: postgresql://docmorph:docmorph_secure_password_2026@db:5432/docmorph
+      DOCMORPH_STORAGE_BACKEND: local
+      DOCMORPH_DEV_AUTH_MODE: "false"
+      DOCMORPH_CORS_ORIGINS: '["http://localhost", "http://localhost:80", "http://127.0.0.1"]'
+    volumes:
+      - storage_data:/app/storage
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Frontend Web Service (Nginx)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: docmorph_frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  storage_data:
+

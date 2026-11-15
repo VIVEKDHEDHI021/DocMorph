@@ -1,0 +1,25 @@
+{
+  "model_type": "LayoutAwareGradientBoosting",
+  "seed": 42,
+  "trained_tokens": 5038,
+  "feature_dim": 36,
+  "training_duration_seconds": 0.86,
+  "val_macro_f1": 1.0,
+  "val_weighted_f1": 1.0,
+  "labels": [
+    "O",
+    "B-FOOTER",
+    "I-FOOTER",
+    "B-STUDENT_NAME",
+    "I-STUDENT_NAME",
+    "B-ENROLLMENT_ID",
+    "I-ENROLLMENT_ID",
+    "B-ROLL_NUMBER",
+    "I-ROLL_NUMBER",
+    "B-STUDENT_ID",
+    "I-STUDENT_ID",
+    "B-PAGE_NUMBER",
+    "I-PAGE_NUMBER"
+  ],
+  "training_date": "2026-11-02 13:22:31"
+}
