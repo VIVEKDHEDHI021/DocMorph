@@ -1,41 +1,18 @@
 import React, { useState, useEffect } from 'react';
-import { useParams, useNavigate, Link } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../services/api';
 import {
   DocumentItem,
   DocumentDetectionResponse,
-  DetectionField,
   JobDetail,
+  ProfileMatchResult,
+  StudentProfile,
 } from '../types';
 import { PdfViewer } from '../components/PdfViewer';
 import { DetectionFieldCard } from '../components/DetectionFieldCard';
-import { ProgressBar } from '../components/ProgressBar';
-import {
-  ArrowLeft,
-  Search,
-  CheckCircle2,
-  AlertTriangle,
-  Sparkles,
-  Download,
-  RotateCcw,
-  FileText,
-  ShieldCheck,
-  Check,
-  X,
-  Layers,
-  Hash,
-  User,
-  CreditCard,
-  Eye,
-  Info,
-  Loader2,
-  ExternalLink,
-  Share2,
-} from 'lucide-react';
 import { NativeService } from '../services/nativeService';
 import { profileStorage } from '../services/profileStorage';
-import { ProfileMatchResult, StudentProfile } from '../types';
 
 interface ParsedIdentity {
   name: string;
@@ -46,36 +23,29 @@ function parseCombinedIdentity(text: string): ParsedIdentity {
   const trimmed = text.trim();
   if (!trimmed) return { name: '', identifier: '' };
 
-  // 1. Name (ID) or Name [ID]
   const parenMatch = trimmed.match(/^(.+?)\s*[\(\[]\s*([A-Za-z0-9\-_/]+)\s*[\)\]]$/);
   if (parenMatch) return { name: parenMatch[1].trim(), identifier: parenMatch[2].trim() };
 
-  // 2. Inverted: (ID) Name or [ID] Name
   const invParenMatch = trimmed.match(/^[\(\[]\s*([A-Za-z0-9\-_/]+)\s*[\)\]]\s*(.+)$/);
   if (invParenMatch) return { name: invParenMatch[2].trim(), identifier: invParenMatch[1].trim() };
 
-  // 3. Inverted: ID - Name or ID | Name (where first part is digits)
   const invDelim = trimmed.match(/^([A-Za-z0-9\-_/]+)\s*[\-–—|,/]\s*([A-Za-z\s.\'\-]+)$/);
   if (invDelim && /^\d{4,}$/.test(invDelim[1].trim())) {
     return { name: invDelim[2].trim(), identifier: invDelim[1].trim() };
   }
 
-  // 4. Standard: Name - ID, Name | ID, Name , ID, Name / ID
   const standardDelim = trimmed.match(/^([A-Za-z\s.\'\-]+?)\s*[\-–—|,/]\s*([A-Za-z0-9\-_/]+)$/);
   if (standardDelim) {
     return { name: standardDelim[1].trim(), identifier: standardDelim[2].trim() };
   }
 
-  // 5. Name followed by digits: e.g. "Vivek Dhedhi 92400120571"
   const spaceDigitsMatch = trimmed.match(/^([A-Za-z\s.\'\-]+?)\s+(\d{6,18})$/);
   if (spaceDigitsMatch) return { name: spaceDigitsMatch[1].trim(), identifier: spaceDigitsMatch[2].trim() };
 
-  // 6. Only digits
   if (/^\d{6,18}$/.test(trimmed)) {
     return { name: '', identifier: trimmed };
   }
 
-  // 7. Fallback: treat as name
   return { name: trimmed, identifier: '' };
 }
 
@@ -88,18 +58,18 @@ export const WorkspacePage: React.FC = () => {
   const [currentStep, setCurrentStep] = useState<number>(1);
   const [replacementValues, setReplacementValues] = useState<Record<string, string>>({});
   const [combinedValue, setCombinedValue] = useState<string>('');
-  const [activePreviewTab, setActivePreviewTab] = useState<'original' | 'personalized'>('original');
+  const [activePreviewTab, setActivePreviewTab] = useState<'original' | 'personalized'>('personalized');
   const [processingStage, setProcessingStage] = useState<number>(0);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [processingError, setProcessingError] = useState<string | null>(null);
 
   // Profile Auto-Personalization & Native Download state
   const [profile, setProfile] = useState<StudentProfile | null>(null);
-  const [matchResult, setMatchResult] = useState<ProfileMatchResult | null>(null);
-  const [isMatching, setIsMatching] = useState(false);
+  const [, setMatchResult] = useState<ProfileMatchResult | null>(null);
   const [savedLocalUri, setSavedLocalUri] = useState<string | null>(null);
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadSuccessNotice, setDownloadSuccessNotice] = useState<string | null>(null);
+  const [viewerPageInfo, setViewerPageInfo] = useState<{ current: number; total: number }>({ current: 1, total: 1 });
 
   // 1. Fetch Document Details
   const {
@@ -116,7 +86,6 @@ export const WorkspacePage: React.FC = () => {
   // 2. Fetch Detections
   const {
     data: detectionData,
-    isLoading: detectionsLoading,
     refetch: refetchDetections,
   } = useQuery<DocumentDetectionResponse>({
     queryKey: ['detections', documentId],
@@ -141,8 +110,6 @@ export const WorkspacePage: React.FC = () => {
   const confirmedFields = fields.filter(
     (f) => f.review_status === 'confirmed' || f.review_status === 'corrected'
   );
-  const pendingFields = fields.filter((f) => f.review_status === 'pending');
-  const rejectedFields = fields.filter((f) => f.review_status === 'rejected');
 
   const nameField = confirmedFields.find((f) => f.field_type === 'student_name');
   const idField = confirmedFields.find((f) =>
@@ -153,16 +120,16 @@ export const WorkspacePage: React.FC = () => {
     (f) => f.field_id !== nameField?.field_id && f.field_id !== idField?.field_id
   );
 
-  const nameOriginal = nameField ? (nameField.corrected_value || nameField.suggested_value) : '';
-  const idOriginal = idField ? (idField.corrected_value || idField.suggested_value) : '';
-  const combinedOriginal = `${nameOriginal} (${idOriginal})`.trim();
+  const nameOriginal = nameField ? (nameField.original_value || nameField.suggested_value) : '';
+  const idOriginal = idField ? (idField.original_value || idField.suggested_value) : '';
+  const combinedOriginal = idOriginal ? `${nameOriginal} (${idOriginal})`.trim() : nameOriginal;
   const namePages = Array.isArray(nameField?.pages) ? nameField.pages : [];
   const idPages = Array.isArray(idField?.pages) ? idField.pages : [];
   const combinedPages = Array.from(new Set([...namePages, ...idPages])).sort(
     (a: number, b: number) => a - b
   );
 
-  // Hook 1: Auto-advance step if state warrants it
+  // Auto-advance step if completed
   useEffect(() => {
     if (latestResult && latestResult.status === 'completed') {
       setCurrentStep(4);
@@ -174,50 +141,60 @@ export const WorkspacePage: React.FC = () => {
     }
   }, [detectionData, latestResult]);
 
-  // Hook 2: Sync combined input with initial values if available
+  // Sync combined input with initial values if available
   useEffect(() => {
-    if (isCombinedIdentity && nameField && idField && !combinedValue) {
-      const nameVal = replacementValues[nameField.field_id] || '';
-      const idVal = replacementValues[idField.field_id] || '';
-      if (nameVal || idVal) {
+    if (isCombinedIdentity && nameField && idField) {
+      const profileId = profile?.student_id || profile?.enrollment_number || profile?.roll_number || '';
+      const nameVal = replacementValues[nameField.field_id] || profile?.full_name || '';
+      const idVal = replacementValues[idField.field_id] || profileId;
+      if (!combinedValue && (nameVal || idVal)) {
         setCombinedValue(idVal ? `${nameVal} (${idVal})`.trim() : nameVal);
       }
     }
-  }, [currentStep, isCombinedIdentity, nameField?.field_id, idField?.field_id]);
+  }, [currentStep, isCombinedIdentity, nameField?.field_id, idField?.field_id, replacementValues, profile, combinedValue]);
 
-  // Hook 3: Load saved student profile
+  // Load saved student profile and listen to profile changes
   useEffect(() => {
     profileStorage.getProfile().then(setProfile);
+    const unsubscribe = profileStorage.onProfileChange(setProfile);
+    return () => unsubscribe();
   }, []);
 
-  // Hook 4: Profile match and auto-plan calculation
+  // Profile match and pre-populate replacement values (never prompt user repeatedly for ID)
   useEffect(() => {
-    if (documentId && profile && detectionData && detectionData.fields.length > 0) {
-      setIsMatching(true);
-      api.personalization
-        .matchProfile(documentId, profile)
-        .then((res) => {
-          setMatchResult(res);
-          // Pre-populate replacement values from profile
-          setReplacementValues((prev) => {
-            const updated = { ...prev };
-            detectionData.fields.forEach((f) => {
-              if (!updated[f.field_id]) {
-                if (f.field_type === 'student_name') updated[f.field_id] = profile.full_name;
-                else if (f.field_type === 'enrollment_number') updated[f.field_id] = profile.enrollment_number;
-                else if (f.field_type === 'roll_number' && profile.roll_number) updated[f.field_id] = profile.roll_number;
-                else if (f.field_type === 'student_id' && profile.student_id) updated[f.field_id] = profile.student_id;
-              }
-            });
-            return updated;
-          });
-        })
-        .catch((e) => console.warn('Profile match error:', e))
-        .finally(() => setIsMatching(false));
+    if (profile && detectionData && detectionData.fields.length > 0) {
+      const profileId = profile.student_id || profile.enrollment_number || profile.roll_number || '';
+      const profileRoll = profile.roll_number || profile.enrollment_number || profile.student_id || '';
+      const profileEnroll = profile.enrollment_number || profile.student_id || profile.roll_number || '';
+
+      setReplacementValues((prev) => {
+        const updated = { ...prev };
+        detectionData.fields.forEach((f) => {
+          if (!updated[f.field_id] || updated[f.field_id].trim() === '') {
+            if (f.field_type === 'student_name' && profile.full_name) {
+              updated[f.field_id] = profile.full_name;
+            } else if (f.field_type === 'enrollment_number' && profileEnroll) {
+              updated[f.field_id] = profileEnroll;
+            } else if (f.field_type === 'roll_number' && profileRoll) {
+              updated[f.field_id] = profileRoll;
+            } else if (f.field_type === 'student_id' && profileId) {
+              updated[f.field_id] = profileId;
+            }
+          }
+        });
+        return updated;
+      });
+
+      if (documentId) {
+        api.personalization
+          .matchProfile(documentId, profile)
+          .then((res) => setMatchResult(res))
+          .catch((e) => console.warn('Profile match error:', e));
+      }
     }
   }, [documentId, profile, detectionData]);
 
-  // Mutations (declared unconditionally before any early returns)
+  // Mutations
   const analyzeMutation = useMutation({
     mutationFn: () => api.detections.analyze(documentId!),
     onSuccess: (data) => {
@@ -288,7 +265,6 @@ export const WorkspacePage: React.FC = () => {
       return;
     }
 
-    // Verify all confirmed fields have replacement values
     for (const field of confirmed) {
       const val = replacementValues[field.field_id];
       if (!val || !val.trim()) {
@@ -296,15 +272,9 @@ export const WorkspacePage: React.FC = () => {
           isCombinedIdentity &&
           (field.field_id === nameField?.field_id || field.field_id === idField?.field_id)
         ) {
-          alert(
-            'Please enter both your Student Name and Enrollment Number in the combined field (e.g. Vivek Dhedhi (92400120571)).'
-          );
+          alert('Please enter both your Student Name and Enrollment Number in the combined field.');
         } else {
-          alert(
-            `Please provide a replacement value for "${getFieldLabel(
-              field.field_type
-            )}" (or reject it if not needed).`
-          );
+          alert(`Please provide a replacement value for "${field.field_type}".`);
         }
         return;
       }
@@ -318,10 +288,9 @@ export const WorkspacePage: React.FC = () => {
 
     setIsProcessing(true);
     setProcessingError(null);
-    setProcessingStage(0);
+    setProcessingStage(1);
 
     try {
-      setProcessingStage(1);
       await new Promise((res) => setTimeout(res, 350));
       setProcessingStage(2);
 
@@ -342,35 +311,6 @@ export const WorkspacePage: React.FC = () => {
     }
   };
 
-  // 1-Click Auto-Personalization Handler
-  const handleAutoPersonalize = async () => {
-    if (!documentId || !profile) return;
-    setIsProcessing(true);
-    setProcessingError(null);
-    setProcessingStage(1);
-
-    try {
-      await new Promise((res) => setTimeout(res, 350));
-      setProcessingStage(2);
-
-      const jobDetail = await api.personalization.autoPersonalize(documentId, profile);
-
-      setProcessingStage(3);
-      await new Promise((res) => setTimeout(res, 350));
-
-      queryClient.setQueryData(['result', documentId], jobDetail);
-      refetchDoc();
-      refetchResult();
-      refetchDetections();
-      setIsProcessing(false);
-      setCurrentStep(4);
-      setActivePreviewTab('personalized');
-    } catch (err: any) {
-      setIsProcessing(false);
-      setProcessingError(err.message || 'Auto-personalization failed.');
-    }
-  };
-
   // Native & Web PDF Download / Open / Share
   const downloadAndGetUri = async (): Promise<string> => {
     if (!documentId || !document) throw new Error('Document not ready.');
@@ -378,8 +318,11 @@ export const WorkspacePage: React.FC = () => {
 
     setIsDownloading(true);
     try {
-      const blob = await api.documents.getPdfBlob(documentId, true);
-      const outName = `DocMorph_Personalized_${document.original_filename}`;
+      const isPersonalized = document.has_personalized_output || activePreviewTab === 'personalized' || currentStep === 4;
+      const blob = await api.documents.getPdfBlob(documentId, isPersonalized);
+      const outName = isPersonalized
+        ? `DocMorph_Personalized_${document.original_filename}`
+        : document.original_filename;
       const uri = await NativeService.savePdfLocally(blob, outName);
       setSavedLocalUri(uri);
       setDownloadSuccessNotice(`Saved as ${outName}`);
@@ -393,7 +336,10 @@ export const WorkspacePage: React.FC = () => {
     if (!documentId || !document) return;
     setIsDownloading(true);
     try {
-      const outName = `DocMorph_Personalized_${document.original_filename}`;
+      const isPersonalized = document.has_personalized_output || activePreviewTab === 'personalized' || currentStep === 4;
+      const outName = isPersonalized
+        ? `DocMorph_Personalized_${document.original_filename}`
+        : document.original_filename;
       if (NativeService.isNative()) {
         const res = await api.personalization.exportPdf(documentId, outName);
         setDownloadSuccessNotice(`Saved to Downloads: ${outName}`);
@@ -441,12 +387,8 @@ export const WorkspacePage: React.FC = () => {
     setCombinedValue(val);
     const parsed = parseCombinedIdentity(val);
     const updated = { ...replacementValues };
-    if (nameField) {
-      updated[nameField.field_id] = parsed.name;
-    }
-    if (idField) {
-      updated[idField.field_id] = parsed.identifier;
-    }
+    if (nameField) updated[nameField.field_id] = parsed.name;
+    if (idField) updated[idField.field_id] = parsed.identifier;
     setReplacementValues(updated);
   };
 
@@ -466,385 +408,340 @@ export const WorkspacePage: React.FC = () => {
     setCombinedValue(nameVal ? `${nameVal} (${val})` : `(${val})`);
   };
 
-  const getFieldLabel = (type: string) => {
-    switch (type) {
-      case 'student_name':
-        return 'Student Name';
-      case 'enrollment_number':
-        return 'Enrollment Number';
-      case 'roll_number':
-        return 'Roll Number';
-      case 'student_id':
-        return 'Student ID';
-      default:
-        return type;
-    }
-  };
-
-  const getFieldIcon = (type: string) => {
-    switch (type) {
-      case 'student_name':
-        return <User className="h-4 w-4 text-indigo-600" />;
-      case 'enrollment_number':
-        return <Hash className="h-4 w-4 text-indigo-600" />;
-      case 'roll_number':
-        return <Layers className="h-4 w-4 text-emerald-600" />;
-      case 'student_id':
-        return <CreditCard className="h-4 w-4 text-amber-600" />;
-      default:
-        return <FileText className="h-4 w-4 text-slate-600" />;
-    }
-  };
-
-  // Safe conditional early returns AFTER all hooks and handlers have executed
   if (!documentId) {
     return (
       <div className="flex h-96 items-center justify-center">
-        <p className="text-slate-500">Document ID is missing.</p>
+        <p className="text-on-surface-variant font-body-md">Document ID is missing.</p>
       </div>
     );
   }
 
   if (docLoading) {
     return (
-      <div className="flex h-[calc(100vh-10rem)] flex-col items-center justify-center">
-        <Loader2 className="h-10 w-10 animate-spin text-indigo-600" />
-        <p className="mt-4 text-sm font-semibold text-slate-700">Loading document workspace...</p>
+      <div className="flex h-[calc(100vh-10rem)] flex-col items-center justify-center gap-3">
+        <span className="material-symbols-outlined text-[40px] text-primary animate-spin">progress_activity</span>
+        <p className="font-label-md text-label-md text-on-surface font-semibold">Opening document workspace...</p>
       </div>
     );
   }
 
   if (docError || !document) {
     return (
-      <div className="mx-auto max-w-xl py-16 text-center">
-        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-rose-50 text-rose-600">
-          <AlertTriangle className="h-6 w-6" />
+      <div className="mx-auto max-w-xl py-16 text-center px-4">
+        <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-error-container text-error mb-3">
+          <span className="material-symbols-outlined text-[28px]">error</span>
         </div>
-        <h2 className="mt-4 text-lg font-bold text-slate-900">Document Not Found</h2>
-        <p className="mt-2 text-sm text-slate-600">
-          The requested document could not be found or you do not have permission to view it.
+        <h2 className="font-headline-sm text-headline-sm text-on-surface font-bold">Document Not Found</h2>
+        <p className="font-body-sm text-body-sm text-on-surface-variant mt-1">
+          The requested document could not be loaded from storage.
         </p>
         <button
-          onClick={() => navigate('/dashboard')}
-          className="mt-6 inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow hover:bg-indigo-700"
+          onClick={() => navigate('/')}
+          className="mt-6 inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 font-label-md text-label-md text-on-primary shadow-sm hover:opacity-90"
         >
-          <ArrowLeft className="h-4 w-4" />
-          Back to Dashboard
+          <span className="material-symbols-outlined text-[18px]">arrow_back</span>
+          Back to Documents
         </button>
       </div>
     );
   }
 
   return (
-    <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
-      {/* Top Header / Breadcrumb */}
-      <div className="flex flex-col gap-4 border-b border-slate-200 pb-5 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-center gap-3">
-          <button
-            onClick={() => navigate('/dashboard')}
-            className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 transition hover:bg-slate-50 hover:text-slate-900"
-            title="Back to Dashboard"
-          >
-            <ArrowLeft className="h-5 w-5" />
-          </button>
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-xl font-bold text-slate-900 sm:text-2xl">
+    <div className="flex-1 flex flex-col w-full bg-surface min-h-screen">
+      {/* 1. STICKY TOP HEADER — Never overlaps or collides with content on any device */}
+      <header className="sticky top-0 z-40 w-full pt-safe bg-surface/95 backdrop-blur-xl border-b border-surface-container-high/80 shadow-xs">
+        <div className="h-14 px-3 sm:px-4 flex items-center justify-between gap-2 max-w-xl mx-auto">
+          <div className="flex items-center gap-1.5 min-w-0">
+            <button
+              onClick={() => navigate('/')}
+              className="w-9 h-9 flex items-center justify-center rounded-full text-on-surface-variant hover:bg-surface-container active:bg-surface-container-high transition-colors shrink-0"
+              title="Back"
+            >
+              <span className="material-symbols-outlined text-[20px]">arrow_back_ios_new</span>
+            </button>
+            <div className="flex flex-col min-w-0">
+              <h1 className="font-label-lg text-label-lg text-on-surface truncate font-bold max-w-[190px] xs:max-w-xs sm:max-w-md">
                 {document.original_filename}
               </h1>
-              {document.has_personalized_output && (
-                <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-xs font-semibold text-emerald-800">
-                  Personalized
+              <div className="flex items-center gap-1.5 text-xs text-on-surface-variant">
+                <span className="font-semibold text-primary">
+                  {currentStep === 1
+                    ? '1. Preview'
+                    : currentStep === 2
+                    ? `2. Review (${fields.length})`
+                    : currentStep === 3
+                    ? '3. Personalizing'
+                    : '4. Export'}
                 </span>
+                <span>•</span>
+                <span>Page {viewerPageInfo.current}/{viewerPageInfo.total || document.page_count}</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-1.5 shrink-0">
+            {document.has_personalized_output && (
+              <span className="px-2 py-0.5 rounded-full bg-secondary-fixed text-on-secondary-fixed-variant font-label-sm text-label-sm font-semibold">
+                Personalized
+              </span>
+            )}
+            <button
+              onClick={handleDownload}
+              disabled={isDownloading}
+              className="w-8 h-8 rounded-full bg-surface-container hover:bg-surface-container-high text-primary flex items-center justify-center transition-colors active:scale-95 disabled:opacity-50"
+              title="Download PDF"
+            >
+              {isDownloading ? (
+                <span className="material-symbols-outlined text-[16px] animate-spin">progress_activity</span>
+              ) : (
+                <span className="material-symbols-outlined text-[18px]">download</span>
               )}
-            </div>
-            <div className="mt-1 flex items-center gap-3 text-xs text-slate-500">
-              <span>{document.page_count} Pages</span>
-              <span>•</span>
-              <span>{(document.file_size / 1024).toFixed(1)} KB</span>
-              <span>•</span>
-              <span className="font-mono text-[10px] text-slate-400">ID: {document.id.slice(0, 8)}...</span>
-            </div>
+            </button>
+            <button
+              onClick={() => navigate('/')}
+              className="w-8 h-8 rounded-full bg-surface-container hover:bg-surface-container-high text-on-surface flex items-center justify-center transition-colors active:scale-95"
+              title="Home"
+            >
+              <span className="material-symbols-outlined text-[18px]">home</span>
+            </button>
           </div>
         </div>
 
-        {/* Step Indicator Tabs */}
-        <div className="flex items-center rounded-xl bg-slate-100 p-1 text-xs font-medium text-slate-600">
-          <button
-            onClick={() => setCurrentStep(1)}
-            className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 transition ${
-              currentStep === 1
-                ? 'bg-white font-semibold text-slate-900 shadow-sm'
-                : 'hover:text-slate-900'
-            }`}
-          >
-            <span className="flex h-4 w-4 items-center justify-center rounded-full bg-slate-200 text-[10px]">
-              1
-            </span>
-            Document Preview
-          </button>
-          <button
-            onClick={() => setCurrentStep(2)}
-            disabled={!detectionData && !document.detections_count}
-            className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 transition disabled:opacity-40 ${
-              currentStep === 2
-                ? 'bg-white font-semibold text-slate-900 shadow-sm'
-                : 'hover:text-slate-900'
-            }`}
-          >
-            <span className="flex h-4 w-4 items-center justify-center rounded-full bg-slate-200 text-[10px]">
-              2
-            </span>
-            Detection & Review
-          </button>
-          <button
-            onClick={() => setCurrentStep(3)}
-            disabled={confirmedFields.length === 0}
-            className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 transition disabled:opacity-40 ${
-              currentStep === 3
-                ? 'bg-white font-semibold text-slate-900 shadow-sm'
-                : 'hover:text-slate-900'
-            }`}
-          >
-            <span className="flex h-4 w-4 items-center justify-center rounded-full bg-slate-200 text-[10px]">
-              3
-            </span>
-            Personalize
-          </button>
-          <button
-            onClick={() => setCurrentStep(4)}
-            disabled={!document.has_personalized_output && !latestResult}
-            className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 transition disabled:opacity-40 ${
-              currentStep === 4
-                ? 'bg-white font-semibold text-slate-900 shadow-sm'
-                : 'hover:text-slate-900'
-            }`}
-          >
-            <span className="flex h-4 w-4 items-center justify-center rounded-full bg-slate-200 text-[10px]">
-              4
-            </span>
-            Result & Verification
-          </button>
-        </div>
-      </div>
-
-      {/* STEP 1: PREVIEW & DETAILS */}
-      {currentStep === 1 && (
-        <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-12">
-          {/* PDF Viewer on Left (8 cols) */}
-          <div className="lg:col-span-8">
-            <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-              <PdfViewer
-                documentId={documentId}
-                title={document.original_filename}
-                onSmartSelectResult={(result) => {
-                  if (result.footerStatus === 'FOOTER_CONFIRMED' && result.candidates.length > 0) {
-                    refetchDetections();
-                  }
-                }}
-              />
-            </div>
+        {/* 4-Step Segmented Bar — Cleanly fits 100% of any mobile screen width */}
+        <div className="px-3 sm:px-4 pb-2.5 max-w-xl mx-auto w-full">
+          <div className="grid grid-cols-4 gap-1 bg-surface-container-low p-1 rounded-full border border-outline-variant/30 text-center">
+            <button
+              onClick={() => setCurrentStep(1)}
+              className={`py-1 rounded-full font-label-sm text-label-sm transition-all ${
+                currentStep === 1
+                  ? 'bg-primary text-on-primary font-bold shadow-xs'
+                  : 'text-on-surface-variant hover:text-on-surface'
+              }`}
+            >
+              1. Preview
+            </button>
+            <button
+              onClick={() => setCurrentStep(2)}
+              disabled={fields.length === 0}
+              className={`py-1 rounded-full font-label-sm text-label-sm transition-all disabled:opacity-40 ${
+                currentStep === 2
+                  ? 'bg-primary text-on-primary font-bold shadow-xs'
+                  : 'text-on-surface-variant hover:text-on-surface'
+              }`}
+            >
+              2. Review
+            </button>
+            <button
+              onClick={() => setCurrentStep(3)}
+              disabled={confirmedFields.length === 0}
+              className={`py-1 rounded-full font-label-sm text-label-sm transition-all disabled:opacity-40 ${
+                currentStep === 3
+                  ? 'bg-primary text-on-primary font-bold shadow-xs'
+                  : 'text-on-surface-variant hover:text-on-surface'
+              }`}
+            >
+              3. Apply
+            </button>
+            <button
+              onClick={() => setCurrentStep(4)}
+              disabled={!document.has_personalized_output && !latestResult}
+              className={`py-1 rounded-full font-label-sm text-label-sm transition-all disabled:opacity-40 ${
+                currentStep === 4
+                  ? 'bg-primary text-on-primary font-bold shadow-xs'
+                  : 'text-on-surface-variant hover:text-on-surface'
+              }`}
+            >
+              4. Export
+            </button>
           </div>
+        </div>
+      </header>
 
-          {/* Document Info & Actions on Right (4 cols) */}
-          <div className="space-y-6 lg:col-span-4">
-            <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-              <h2 className="text-base font-bold text-slate-900">Document Analysis</h2>
-              <p className="mt-1 text-xs text-slate-500">
-                Inspect document structure and run the intelligent footer detection engine.
-              </p>
-
-              <div className="mt-6 space-y-3.5 divide-y divide-slate-100 text-sm">
-                <div className="flex items-center justify-between pt-2">
-                  <span className="text-xs text-slate-500">Document Status</span>
-                  <span className="font-semibold uppercase text-slate-900 text-xs">
-                    {document.status.replace('_', ' ')}
-                  </span>
+      {/* 2. MAIN SCROLLABLE BODY — Perfectly centered and sized for mobile and all devices */}
+      <main className="flex-1 flex flex-col w-full max-w-xl mx-auto px-3 sm:px-4 pt-3 pb-32">
+        {/* STEP 1: PREVIEW */}
+        {currentStep === 1 && (
+          <div className="space-y-3 w-full">
+            {/* Document Info Callout */}
+            <div className="bg-surface-container-low rounded-xl p-3 shadow-xs border border-outline-variant/40 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="w-9 h-9 rounded-lg bg-primary-container text-on-primary flex items-center justify-center shrink-0">
+                  <span className="material-symbols-outlined text-[18px]">description</span>
                 </div>
-                <div className="flex items-center justify-between pt-2">
-                  <span className="text-xs text-slate-500">Selectable Text</span>
-                  <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-600">
-                    <Check className="h-3.5 w-3.5" /> Verified
-                  </span>
-                </div>
-                <div className="flex items-center justify-between pt-2">
-                  <span className="text-xs text-slate-500">Page Count</span>
-                  <span className="font-semibold text-slate-900 text-xs">
-                    {document.page_count} pages
-                  </span>
-                </div>
-                <div className="flex items-center justify-between pt-2">
-                  <span className="text-xs text-slate-500">File Size</span>
-                  <span className="font-semibold text-slate-900 text-xs">
-                    {(document.file_size / 1024).toFixed(1)} KB
-                  </span>
-                </div>
-              </div>
-
-              {/* Action Button */}
-              <div className="mt-8">
-                {detectionData && detectionData.fields.length > 0 ? (
-                  <button
-                    onClick={() => setCurrentStep(2)}
-                    className="flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700"
-                  >
-                    <Eye className="h-4 w-4" />
-                    Review Detections ({detectionData.fields.length})
-                  </button>
-                ) : (
-                  <button
-                    onClick={() => analyzeMutation.mutate()}
-                    disabled={analyzeMutation.isPending}
-                    className="flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:opacity-60"
-                  >
-                    {analyzeMutation.isPending ? (
-                      <>
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        Scanning footer regions...
-                      </>
-                    ) : (
-                      <>
-                        <Search className="h-4 w-4" />
-                        Run Intelligent Detection
-                      </>
-                    )}
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {/* Privacy & Layout Guarantee Notice */}
-            <div className="rounded-2xl border border-indigo-100 bg-indigo-50/50 p-5">
-              <div className="flex items-start gap-3">
-                <ShieldCheck className="h-5 w-5 flex-shrink-0 text-indigo-600 mt-0.5" />
-                <div>
-                  <h3 className="text-xs font-semibold uppercase tracking-wider text-indigo-950">
-                    Document Integrity Guarantee
-                  </h3>
-                  <p className="mt-1 text-xs text-indigo-800 leading-relaxed">
-                    DocMorph operates directly on native PDF streams. Your original text flows,
-                    formulas, graphs, and formatting remain 100% unaltered.
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-label-md text-label-md text-on-surface font-bold truncate">
+                      {document.original_filename}
+                    </span>
+                    <span className="bg-primary/10 text-primary font-label-sm text-label-sm px-1.5 py-0.2 rounded font-medium">
+                      PDF
+                    </span>
+                  </div>
+                  <p className="font-body-sm text-body-sm text-on-surface-variant">
+                    {document.page_count} Pages • {(document.file_size / 1024).toFixed(1)} KB • 100% Offline
                   </p>
                 </div>
               </div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={handleDownload}
+                  disabled={isDownloading}
+                  className="h-7 px-2.5 rounded-full bg-primary/10 hover:bg-primary hover:text-on-primary text-primary font-label-sm text-label-sm font-semibold flex items-center gap-1 transition-all active:scale-95"
+                  title="Download PDF"
+                >
+                  <span className="material-symbols-outlined text-[15px]">download</span>
+                  <span>Download</span>
+                </button>
+                <span className="px-2 py-0.5 rounded-full bg-secondary-fixed text-on-secondary-fixed-variant font-label-sm text-label-sm font-semibold shrink-0">
+                  {fields.length > 0 ? `${fields.length} Found` : 'Ready'}
+                </span>
+              </div>
             </div>
-          </div>
-        </div>
-      )}
 
-      {/* STEP 2: DETECTION & REVIEW */}
-      {currentStep === 2 && (
-        <div className="mt-6 space-y-6">
-          {/* Smart Profile 1-Click Auto-Personalize Banner */}
-          {profile && matchResult && matchResult.all_eligible_for_auto && matchResult.auto_replacement_plan.length > 0 && (
-            <div className="rounded-2xl border border-brand-200 bg-gradient-to-r from-brand-50 via-indigo-50 to-white p-5 shadow-sm">
-              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-                <div className="flex items-start gap-3.5">
-                  <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-brand-600 text-white shadow-md shadow-brand-500/20 shrink-0">
-                    <Sparkles className="h-6 w-6" />
+            <PdfViewer
+              documentId={documentId}
+              title={document.original_filename}
+              onPageChange={(curr, total) => setViewerPageInfo({ current: curr, total })}
+              onSmartSelectResult={(result) => {
+                if (result.footerStatus === 'FOOTER_CONFIRMED' && result.candidates.length > 0) {
+                  refetchDetections();
+                }
+              }}
+            />
+          </div>
+        )}
+
+        {/* STEP 2: DETECTION & REVIEW (Without the redundant auto-personalize section) */}
+        {currentStep === 2 && (
+          <div className="space-y-3 w-full">
+            {/* UNIFIED STUDENT IDENTITY FOOTER CARD */}
+            {isCombinedIdentity && (
+              <div className="bg-surface-container-lowest rounded-xl p-3.5 shadow-sm border border-outline-variant/60 w-full">
+                {/* Header row with responsive wrap protection */}
+                <div className="flex items-center justify-between pb-2 border-b border-surface-container-high/60 mb-2.5">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className="material-symbols-outlined text-primary text-[20px] shrink-0">badge</span>
+                    <h3 className="font-label-lg text-label-lg text-on-surface font-bold truncate">
+                      Unified Student Identity Footer
+                    </h3>
                   </div>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-bold uppercase tracking-wider text-brand-700">
-                        Smart Profile Match
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {combinedPages.length > 0 && (
+                      <span className="px-2 py-0.5 rounded-full bg-surface-container-high text-on-surface-variant font-label-sm text-label-sm font-semibold">
+                        {combinedPages.length} {combinedPages.length === 1 ? 'Page' : 'Pages'}
                       </span>
-                      <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-800">
-                        Ready to Personalize
-                      </span>
-                    </div>
-                    <div className="text-sm font-bold text-slate-900 mt-0.5">
-                      Personalize for {profile.full_name} ({profile.enrollment_number})
-                    </div>
-                    <p className="text-xs text-slate-600 mt-0.5">
-                      {matchResult.summary_message} All safety checks and typography alignments verified.
-                    </p>
+                    )}
+                    <span className="px-2 py-0.5 rounded bg-primary-fixed text-primary font-label-sm text-label-sm font-bold">
+                      PAIRED
+                    </span>
                   </div>
                 </div>
 
-                <button
-                  onClick={handleAutoPersonalize}
-                  disabled={isProcessing}
-                  className="inline-flex items-center justify-center gap-2 rounded-xl bg-brand-600 px-5 py-3 text-sm font-bold text-white shadow-lg shadow-brand-500/25 hover:bg-brand-700 active:scale-[0.98] transition-all disabled:opacity-50 shrink-0"
-                >
-                  <Sparkles className="h-4 w-4" />
-                  Auto-Personalize Document
-                </button>
-              </div>
-            </div>
-          )}
+                {combinedPages.length > 0 && (
+                  <div className="text-[11px] text-on-surface-variant mb-2.5">
+                    Found on pages: <span className="font-semibold text-on-surface">{combinedPages.join(', ')}</span>
+                  </div>
+                )}
 
-          {/* Summary Banner */}
-          <div className="flex flex-col gap-4 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm md:flex-row md:items-center md:justify-between">
-            <div>
-              <div className="flex items-center gap-2">
-                <h2 className="text-lg font-bold text-slate-900">Detected Student Information</h2>
-                <span className="rounded-full bg-indigo-100 px-2.5 py-0.5 text-xs font-semibold text-indigo-800">
-                  {fields.length} Found
-                </span>
-              </div>
-              <p className="mt-1 text-xs text-slate-600">
-                Confirm, correct, or reject each field before proceeding to personalization.
-                Only confirmed fields will be replaced.
-              </p>
-            </div>
+                <div className="space-y-2.5">
+                  <div>
+                    <span className="font-label-sm text-label-sm text-on-surface-variant block uppercase font-bold">
+                      Original Document Value
+                    </span>
+                    <div className="mt-1 px-3 py-2 rounded-lg bg-surface-container-low font-mono text-xs sm:text-sm text-on-surface font-medium break-all border border-outline-variant/30">
+                      {combinedOriginal || 'Not found'}
+                    </div>
+                  </div>
 
-            <div className="flex items-center gap-3">
-              <button
-                onClick={() => analyzeMutation.mutate()}
-                disabled={analyzeMutation.isPending}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:opacity-50"
-              >
-                <RotateCcw className={`h-3.5 w-3.5 ${analyzeMutation.isPending ? 'animate-spin' : ''}`} />
-                Re-analyze PDF
-              </button>
-              {pendingFields.length > 0 && (
+                  <div>
+                    <span className="font-label-sm text-label-sm text-primary block uppercase font-bold">
+                      Replacement Value
+                    </span>
+                    <input
+                      type="text"
+                      value={combinedValue}
+                      onChange={(e) => handleCombinedChange(e.target.value)}
+                      placeholder={
+                        profile
+                          ? `${profile.full_name} (${profile.enrollment_number || profile.student_id || profile.roll_number || ''})`
+                          : 'e.g. Vivek Dhedhi (92400120571)'
+                      }
+                      className="mt-1 w-full px-3 py-2 rounded-lg bg-surface-container-lowest border border-outline-variant focus:border-primary focus:outline-none font-medium text-xs sm:text-sm text-on-surface"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                    <div>
+                      <span className="font-label-sm text-label-sm text-on-surface-variant block">Candidate Name</span>
+                      <input
+                        type="text"
+                        value={nameField ? replacementValues[nameField.field_id] || '' : ''}
+                        onChange={(e) => handleSubNameChange(e.target.value)}
+                        placeholder={profile?.full_name || 'Candidate Name'}
+                        className="mt-1 w-full px-3 py-1.5 rounded-lg bg-surface-container-low border border-outline-variant/60 font-body-sm text-body-sm text-on-surface focus:bg-surface-container-lowest focus:border-primary focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <span className="font-label-sm text-label-sm text-on-surface-variant block">Enrollment / Roll ID</span>
+                      <input
+                        type="text"
+                        value={idField ? replacementValues[idField.field_id] || '' : ''}
+                        onChange={(e) => handleSubIdChange(e.target.value)}
+                        placeholder={
+                          profile?.enrollment_number || profile?.student_id || profile?.roll_number || 'Enrollment / Roll Number'
+                        }
+                        className="mt-1 w-full px-3 py-1.5 rounded-lg bg-surface-container-low border border-outline-variant/60 font-body-sm text-body-sm text-on-surface focus:bg-surface-container-lowest focus:border-primary focus:outline-none"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Other Confirmed Fields */}
+            {otherConfirmedFields.length > 0 && (
+              <div className="space-y-2">
+                <h4 className="font-label-sm text-label-sm text-on-surface-variant uppercase font-bold">Additional Fields</h4>
+                {otherConfirmedFields.map((f) => {
+                  const fallbackNewVal =
+                    f.field_type === 'student_name'
+                      ? profile?.full_name
+                      : profile?.student_id || profile?.enrollment_number || profile?.roll_number;
+
+                  return (
+                    <div key={f.field_id} className="bg-surface-container-lowest rounded-xl p-3 border border-outline-variant/60">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="font-label-sm text-label-sm uppercase font-bold text-on-surface">{f.field_type}</span>
+                        <span className="font-body-sm text-body-sm text-outline">Orig: {f.original_value || f.suggested_value}</span>
+                      </div>
+                      <input
+                        type="text"
+                        value={replacementValues[f.field_id] || ''}
+                        onChange={(e) =>
+                          setReplacementValues({ ...replacementValues, [f.field_id]: e.target.value })
+                        }
+                        placeholder={fallbackNewVal ? `New value: ${fallbackNewVal}` : `Enter new ${f.field_type}`}
+                        className="w-full px-3 py-1.5 rounded-lg bg-surface-container-low border border-outline-variant focus:bg-surface-container-lowest focus:border-primary focus:outline-none text-xs sm:text-sm font-medium text-on-surface"
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* All Detected Fields List */}
+            <div className="space-y-2 pt-1">
+              <div className="flex items-center justify-between">
+                <h3 className="font-headline-sm text-headline-sm text-on-surface font-bold">Detected Credential Records</h3>
                 <button
                   onClick={handleConfirmAll}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-emerald-700"
+                  className="font-label-sm text-label-sm text-primary hover:underline font-semibold"
                 >
-                  <Check className="h-3.5 w-3.5" />
                   Confirm All Pending
                 </button>
-              )}
-              <button
-                onClick={() => setCurrentStep(3)}
-                disabled={confirmedFields.length === 0}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:opacity-40"
-              >
-                Proceed to Personalization ({confirmedFields.length})
-                <Sparkles className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          </div>
-
-          {/* Detections List Grid */}
-          {detectionsLoading ? (
-            <div className="flex h-64 flex-col items-center justify-center rounded-2xl border border-slate-200 bg-white">
-              <Loader2 className="h-8 w-8 animate-spin text-indigo-600" />
-              <p className="mt-3 text-sm text-slate-600">Loading detected fields...</p>
-            </div>
-          ) : fields.length === 0 ? (
-            <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-slate-300 bg-white py-16 text-center">
-              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-amber-50 text-amber-600">
-                <AlertTriangle className="h-6 w-6" />
               </div>
-              <h3 className="mt-4 text-base font-semibold text-slate-900">
-                No Personal Information Detected
-              </h3>
-              <p className="mt-1 max-w-md text-xs text-slate-500">
-                Our footer detection engine scanned the document but did not find standard student
-                name or enrollment number patterns in the footer margins.
-              </p>
-              <button
-                onClick={() => analyzeMutation.mutate()}
-                className="mt-5 inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white shadow hover:bg-indigo-700"
-              >
-                <RotateCcw className="h-3.5 w-3.5" />
-                Retry Detection
-              </button>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+
               {fields.map((field) => (
                 <DetectionFieldCard
                   key={field.field_id}
@@ -852,465 +749,203 @@ export const WorkspacePage: React.FC = () => {
                   onConfirm={(id) => confirmMutation.mutate(id)}
                   onReject={(id) => rejectMutation.mutate(id)}
                   onCorrect={(id, val, type) =>
-                    correctMutation.mutate({
-                      fieldId: id,
-                      correctedValue: val,
-                      fieldType: type,
-                    })
+                    correctMutation.mutate({ fieldId: id, correctedValue: val, fieldType: type })
                   }
                 />
               ))}
             </div>
-          )}
-        </div>
-      )}
-
-      {/* STEP 3: PERSONALIZATION FORM */}
-      {currentStep === 3 && (
-        <div className="mt-6 space-y-6">
-          {/* Main Form Container */}
-          <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
-            {/* Input Form Column (7 cols) */}
-            <div className="space-y-6 lg:col-span-7">
-              <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-                <div className="flex items-center justify-between border-b border-slate-100 pb-4">
-                  <div>
-                    <h2 className="text-lg font-bold text-slate-900">Enter Your Personal Details</h2>
-                    <p className="mt-1 text-xs text-slate-500">
-                      These values will replace the original detected values across all occurrences.
-                    </p>
-                  </div>
-                  <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700">
-                    {confirmedFields.length} {confirmedFields.length === 1 ? 'Field' : 'Fields'} Confirmed
-                  </span>
-                </div>
-
-                <div className="mt-6 space-y-5">
-                  {confirmedFields.map((field) => {
-                    const original = field.corrected_value || field.suggested_value;
-                    const currentValue = replacementValues[field.field_id] || '';
-
-                    return (
-                      <div
-                        key={field.field_id}
-                        className="rounded-xl border border-slate-200 bg-slate-50/50 p-4 transition focus-within:border-indigo-500 focus-within:bg-white"
-                      >
-                        <div className="flex items-center justify-between">
-                          <label className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-800">
-                            {getFieldIcon(field.field_type)}
-                            {getFieldLabel(field.field_type)}
-                          </label>
-                          <span className="text-[11px] font-medium text-slate-500">
-                            Occurs on {field.pages.length} {field.pages.length === 1 ? 'page' : 'pages'} (
-                            {field.pages.join(', ')})
-                          </span>
-                        </div>
-
-                        {/* Original vs Replacement Input */}
-                        <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                          <div>
-                            <span className="block text-[11px] font-semibold text-slate-400">
-                              ORIGINAL VALUE
-                            </span>
-                            <div className="mt-1 rounded-lg border border-slate-200 bg-slate-100 px-3 py-2 text-xs font-mono text-slate-600 line-through">
-                              {original}
-                            </div>
-                          </div>
-
-                          <div>
-                            <span className="block text-[11px] font-semibold text-indigo-700">
-                              NEW REPLACEMENT VALUE *
-                            </span>
-                            <input
-                              type="text"
-                              value={currentValue}
-                              onChange={(e) =>
-                                setReplacementValues({
-                                  ...replacementValues,
-                                  [field.field_id]: e.target.value,
-                                })
-                              }
-                              placeholder={`Enter your ${getFieldLabel(field.field_type).toLowerCase()}`}
-                              className="mt-1 block w-full rounded-lg border border-indigo-300 px-3 py-2 text-xs font-semibold text-slate-900 shadow-sm placeholder-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
-                            />
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-
-                {/* Processing State Error */}
-                {processingError && (
-                  <div className="mt-5 flex items-center gap-3 rounded-lg border border-rose-200 bg-rose-50 p-3.5 text-xs text-rose-700">
-                    <AlertTriangle className="h-4 w-4 flex-shrink-0 text-rose-500" />
-                    <span>{processingError}</span>
-                  </div>
-                )}
-
-                {/* Actions */}
-                <div className="mt-8 flex items-center justify-between border-t border-slate-100 pt-5">
-                  <button
-                    onClick={() => setCurrentStep(2)}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
-                  >
-                    <ArrowLeft className="h-3.5 w-3.5" />
-                    Back to Review
-                  </button>
-
-                  <button
-                    onClick={handleStartPersonalization}
-                    disabled={isProcessing}
-                    className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-6 py-2.5 text-sm font-semibold text-white shadow-md transition hover:bg-indigo-700 disabled:opacity-60"
-                  >
-                    {isProcessing ? (
-                      <>
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        Personalizing Document...
-                      </>
-                    ) : (
-                      <>
-                        <Sparkles className="h-4 w-4" />
-                        Execute Personalization
-                      </>
-                    )}
-                  </button>
-                </div>
-              </div>
-
-              {/* In-progress execution display */}
-              {isProcessing && (
-                <div className="rounded-2xl border border-indigo-200 bg-indigo-50/40 p-6">
-                  <ProgressBar currentStageIndex={processingStage} />
-                </div>
-              )}
-            </div>
-
-            {/* Planned Diff & Replacement Preview (5 cols) */}
-            <div className="space-y-6 lg:col-span-5">
-              <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-                <h3 className="text-sm font-bold text-slate-900">Replacement Plan</h3>
-                <p className="mt-1 text-xs text-slate-500">
-                  Pre-flight preview of modifications that will be applied.
-                </p>
-
-                <div className="mt-4 overflow-hidden rounded-xl border border-slate-200">
-                  <table className="min-w-full divide-y divide-slate-200 text-left text-xs">
-                    <thead className="bg-slate-50 text-slate-500 font-semibold">
-                      <tr>
-                        <th className="px-3 py-2.5">Field</th>
-                        <th className="px-3 py-2.5">Original</th>
-                        <th className="px-3 py-2.5">Target</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 bg-white">
-                      {confirmedFields.map((field) => (
-                        <tr key={field.field_id}>
-                          <td className="whitespace-nowrap px-3 py-2.5 font-medium text-slate-900">
-                            {getFieldLabel(field.field_type)}
-                          </td>
-                          <td className="whitespace-nowrap px-3 py-2.5 text-slate-500 font-mono text-[11px] line-through">
-                            {field.corrected_value || field.suggested_value}
-                          </td>
-                          <td className="whitespace-nowrap px-3 py-2.5 font-semibold font-mono text-[11px] text-emerald-600">
-                            {replacementValues[field.field_id] || (
-                              <span className="italic text-slate-400">Not set</span>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-
-                <div className="mt-5 space-y-2 rounded-xl bg-slate-50 p-3.5 text-xs text-slate-600">
-                  <div className="flex items-center gap-2 text-slate-900 font-semibold">
-                    <ShieldCheck className="h-4 w-4 text-indigo-600" />
-                    Non-Destructive Rules Applied:
-                  </div>
-                  <ul className="list-disc pl-5 space-y-1 text-[11px] text-slate-500">
-                    <li>Original field labels (e.g. "Name:", "Enrollment:") stay intact.</li>
-                    <li>Adaptive font scaling matches character width and prevents text collision.</li>
-                    <li>Surrounding content, headers, formulas, and margins remain untouched.</li>
-                  </ul>
-                </div>
-              </div>
-            </div>
           </div>
-        </div>
-      )}
+        )}
 
-      {/* STEP 4: RESULT, VERIFICATION & DOWNLOAD */}
-      {currentStep === 4 && (
-        <div className="mt-6 space-y-6">
-          {/* Header Action Banner */}
-          <div className="flex flex-col gap-4 rounded-2xl border border-emerald-200 bg-emerald-50/60 p-6 shadow-sm md:flex-row md:items-center md:justify-between">
-            <div className="flex items-center gap-3">
-              <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-600 text-white shadow-md shadow-emerald-200">
-                <CheckCircle2 className="h-6 w-6" />
+        {/* STEP 3: PERSONALIZATION PROGRESS */}
+        {currentStep === 3 && (
+          <div className="bg-surface-container-lowest rounded-xl p-6 shadow-sm border border-outline-variant/60 text-center max-w-md mx-auto my-6 w-full">
+            <span className="material-symbols-outlined text-[42px] text-primary animate-spin mb-2">sync</span>
+            <h3 className="font-headline-sm text-headline-sm text-on-surface font-bold">Personalizing Document</h3>
+            <p className="font-body-sm text-body-sm text-on-surface-variant mt-1 mb-4">
+              Redacting original streams and injecting verified credentials across all pages.
+            </p>
+
+            <div className="space-y-2 text-left">
+              <div className="flex items-center gap-2.5 p-2 rounded-lg bg-surface-container-low">
+                <span className={`material-symbols-outlined text-[18px] ${processingStage >= 1 ? 'text-secondary' : 'text-outline'}`}>
+                  {processingStage >= 1 ? 'check_circle' : 'radio_button_unchecked'}
+                </span>
+                <span className="font-label-sm text-label-sm text-on-surface">1. Analyzing Typography & Baseline</span>
               </div>
-              <div>
-                <h2 className="text-lg font-bold text-slate-900">
-                  Personalization Complete & Verified
-                </h2>
-                <p className="text-xs text-emerald-800">
-                  Document has been processed and independently verified against corruption and layout shifts.
-                </p>
+              <div className="flex items-center gap-2.5 p-2 rounded-lg bg-surface-container-low">
+                <span className={`material-symbols-outlined text-[18px] ${processingStage >= 2 ? 'text-secondary' : 'text-outline'}`}>
+                  {processingStage >= 2 ? 'check_circle' : 'radio_button_unchecked'}
+                </span>
+                <span className="font-label-sm text-label-sm text-on-surface">2. Redacting Content Streams & Form XObjects</span>
+              </div>
+              <div className="flex items-center gap-2.5 p-2 rounded-lg bg-surface-container-low">
+                <span className={`material-symbols-outlined text-[18px] ${processingStage >= 3 ? 'text-secondary' : 'text-outline'}`}>
+                  {processingStage >= 3 ? 'check_circle' : 'radio_button_unchecked'}
+                </span>
+                <span className="font-label-sm text-label-sm text-on-surface">3. Performing Page-by-Page Output Audit</span>
               </div>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                onClick={() => setCurrentStep(3)}
-                className="inline-flex items-center gap-1.5 rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
-              >
-                <RotateCcw className="h-3.5 w-3.5" />
-                Change Values
-              </button>
+            {processingError && (
+              <div className="mt-3 p-2.5 rounded-lg bg-error-container text-on-error-container font-body-sm text-body-sm">
+                {processingError}
+              </div>
+            )}
+          </div>
+        )}
 
+        {/* STEP 4: RESULT & EXPORT */}
+        {currentStep === 4 && (
+          <div className="space-y-3 w-full">
+            {/* Toggle Original vs Personalized */}
+            <div className="flex items-center justify-center gap-2 mb-2">
+              <div className="bg-surface-container p-0.5 rounded-full flex items-center shadow-xs">
+                <button
+                  onClick={() => setActivePreviewTab('personalized')}
+                  className={`px-3.5 py-1 rounded-full font-label-sm text-label-sm font-semibold transition-all ${
+                    activePreviewTab === 'personalized'
+                      ? 'bg-primary text-on-primary shadow-xs'
+                      : 'text-on-surface-variant hover:text-on-surface'
+                  }`}
+                >
+                  Personalized PDF
+                </button>
+                <button
+                  onClick={() => setActivePreviewTab('original')}
+                  className={`px-3.5 py-1 rounded-full font-label-sm text-label-sm font-semibold transition-all ${
+                    activePreviewTab === 'original'
+                      ? 'bg-primary text-on-primary shadow-xs'
+                      : 'text-on-surface-variant hover:text-on-surface'
+                  }`}
+                >
+                  Original PDF
+                </button>
+              </div>
+            </div>
+
+            <PdfViewer
+              documentId={documentId}
+              isPersonalized={activePreviewTab === 'personalized'}
+              title={activePreviewTab === 'personalized' ? 'Personalized Document' : 'Original Document'}
+              onPageChange={(curr, total) => setViewerPageInfo({ current: curr, total })}
+            />
+
+            {/* Quick Export Action Bar */}
+            <div className="grid grid-cols-3 gap-2 pt-2">
+              <button
+                onClick={handleOpen}
+                className="h-11 rounded-xl bg-surface-container-lowest border border-outline-variant text-on-surface font-label-md text-label-md flex items-center justify-center gap-1.5 shadow-xs hover:border-primary active:scale-[0.98] transition-all"
+              >
+                <span className="material-symbols-outlined text-[18px] text-primary">visibility</span>
+                Open
+              </button>
+              <button
+                onClick={handleShare}
+                className="h-11 rounded-xl bg-surface-container-lowest border border-outline-variant text-on-surface font-label-md text-label-md flex items-center justify-center gap-1.5 shadow-xs hover:border-primary active:scale-[0.98] transition-all"
+              >
+                <span className="material-symbols-outlined text-[18px] text-secondary">share</span>
+                Share
+              </button>
               <button
                 onClick={handleDownload}
                 disabled={isDownloading}
-                className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2 text-xs sm:text-sm font-bold text-white shadow-md transition hover:bg-emerald-700 active:scale-[0.98] disabled:opacity-50"
+                className="h-11 rounded-xl bg-gradient-to-r from-primary to-secondary text-on-primary font-label-md text-label-md flex items-center justify-center gap-1.5 shadow-xs active:scale-[0.98] transition-all disabled:opacity-50"
               >
-                {isDownloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-                Download PDF
-              </button>
-
-              <button
-                onClick={handleOpen}
-                disabled={isDownloading}
-                className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-300 bg-white px-3.5 py-2 text-xs sm:text-sm font-bold text-emerald-800 shadow-sm transition hover:bg-emerald-50 active:scale-[0.98]"
-              >
-                <ExternalLink className="h-4 w-4 text-emerald-600" />
-                Open PDF
-              </button>
-
-              <button
-                onClick={handleShare}
-                disabled={isDownloading}
-                className="inline-flex items-center gap-1.5 rounded-xl border border-indigo-200 bg-indigo-50 px-3.5 py-2 text-xs sm:text-sm font-bold text-indigo-700 shadow-sm transition hover:bg-indigo-100 active:scale-[0.98]"
-              >
-                <Share2 className="h-4 w-4 text-indigo-600" />
-                Share PDF
+                {isDownloading ? (
+                  <span className="material-symbols-outlined text-[18px] animate-spin">progress_activity</span>
+                ) : (
+                  <span className="material-symbols-outlined text-[18px]">download</span>
+                )}
+                {isDownloading ? 'Downloading...' : 'Download'}
               </button>
             </div>
+
+            {downloadSuccessNotice && (
+              <div className="p-2.5 rounded-lg bg-surface-container text-on-surface text-center font-body-sm text-body-sm">
+                {downloadSuccessNotice}
+              </div>
+            )}
           </div>
+        )}
+      </main>
 
-          {downloadSuccessNotice && (
-            <div className="rounded-xl bg-emerald-50 border border-emerald-200 p-3.5 flex items-center justify-between gap-3 text-xs text-emerald-800">
-              <div className="flex items-center gap-2.5">
-                <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
-                <span>{downloadSuccessNotice} — document saved to device storage.</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={handleOpen}
-                  className="font-bold underline text-emerald-900 hover:text-emerald-950"
-                >
-                  Open Now
-                </button>
-                <span>•</span>
-                <button
-                  onClick={handleShare}
-                  className="font-bold underline text-emerald-900 hover:text-emerald-950"
-                >
-                  Share
-                </button>
-              </div>
-            </div>
+      {/* 3. FIXED BOTTOM ACTION BAR — Clean, perfectly fitted on all mobile screens */}
+      <aside className="fixed bottom-0 inset-x-0 z-40 pb-safe bg-surface/95 backdrop-blur-xl border-t border-surface-container-high/80 shadow-[0_-4px_20px_rgba(0,0,0,0.06)]">
+        <div className="px-3 sm:px-4 py-2.5 flex items-center justify-between gap-3 max-w-xl mx-auto w-full">
+          {/* Secondary Action */}
+          <button
+            onClick={() => {
+              if (currentStep > 1) setCurrentStep((prev) => prev - 1);
+              else navigate('/');
+            }}
+            className="px-5 h-11 rounded-full bg-surface-container text-on-surface font-label-md text-label-md flex items-center justify-center active:bg-surface-container-high transition-colors shrink-0"
+          >
+            {currentStep > 1 ? 'Back' : 'Close'}
+          </button>
+
+          {/* Primary Action Button */}
+          {currentStep === 1 && (
+            <button
+              onClick={() => {
+                if (fields.length > 0) setCurrentStep(2);
+                else analyzeMutation.mutate();
+              }}
+              disabled={analyzeMutation.isPending}
+              className="flex-1 h-11 rounded-full bg-gradient-to-r from-primary to-secondary text-on-primary font-label-md text-label-md flex items-center justify-center gap-1.5 shadow-sm active:scale-[0.98] transition-transform disabled:opacity-50"
+            >
+              <span>{fields.length > 0 ? `Review Fields (${fields.length})` : 'Analyze Document'}</span>
+              <span className="material-symbols-outlined text-[18px]">arrow_forward</span>
+            </button>
           )}
 
-          {/* Verification Report & Preview Grid */}
-          <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
-            {/* Left Column: Interactive PDF Viewer Toggle (7 cols) */}
-            <div className="space-y-4 lg:col-span-7">
-              <div className="flex items-center justify-between rounded-xl bg-white p-2 border border-slate-200 shadow-sm">
-                <div className="flex items-center gap-1 rounded-lg bg-slate-100 p-1 text-xs font-medium text-slate-600">
-                  <button
-                    onClick={() => setActivePreviewTab('personalized')}
-                    className={`rounded-md px-3 py-1.5 transition ${
-                      activePreviewTab === 'personalized'
-                        ? 'bg-white font-semibold text-emerald-700 shadow-sm'
-                        : 'hover:text-slate-900'
-                    }`}
-                  >
-                    Personalized PDF
-                  </button>
-                  <button
-                    onClick={() => setActivePreviewTab('original')}
-                    className={`rounded-md px-3 py-1.5 transition ${
-                      activePreviewTab === 'original'
-                        ? 'bg-white font-semibold text-slate-900 shadow-sm'
-                        : 'hover:text-slate-900'
-                    }`}
-                  >
-                    Original PDF
-                  </button>
-                </div>
-                <span className="text-xs text-slate-500 pr-2">
-                  {activePreviewTab === 'personalized'
-                    ? 'Displaying generated output with updated footers'
-                    : 'Displaying unmodified original document'}
-                </span>
-              </div>
+          {currentStep === 2 && (
+            <button
+              onClick={handleStartPersonalization}
+              disabled={confirmedFields.length === 0 || isProcessing}
+              className="flex-1 h-11 rounded-full bg-gradient-to-r from-primary to-secondary text-on-primary font-label-md text-label-md flex items-center justify-center gap-1.5 shadow-sm active:scale-[0.98] transition-transform disabled:opacity-50"
+            >
+              <span>Personalize Document</span>
+              <span className="material-symbols-outlined text-[18px]">arrow_forward</span>
+            </button>
+          )}
 
-              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                <PdfViewer
-                  documentId={documentId}
-                  isPersonalized={activePreviewTab === 'personalized'}
-                  title={
-                    activePreviewTab === 'personalized'
-                      ? `personalized_${document.original_filename}`
-                      : document.original_filename
-                  }
-                />
-              </div>
-            </div>
+          {currentStep === 3 && (
+            <button
+              disabled
+              className="flex-1 h-11 rounded-full bg-primary-container text-on-primary font-label-md text-label-md flex items-center justify-center gap-1.5 opacity-70"
+            >
+              <span className="material-symbols-outlined text-[18px] animate-spin">sync</span>
+              <span>Processing...</span>
+            </button>
+          )}
 
-            {/* Right Column: Verification Report & Occurrence Breakdown (5 cols) */}
-            <div className="space-y-6 lg:col-span-5">
-              {/* Verification Checklist Card */}
-              <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-                <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-                  <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                    <ShieldCheck className="h-4 w-4 text-emerald-600" />
-                    Verification Checklist
-                  </h3>
-                  <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-xs font-semibold text-emerald-800">
-                    Passed
-                  </span>
-                </div>
-
-                <div className="mt-4 space-y-3 text-xs">
-                  <div className="flex items-start gap-2.5">
-                    <CheckCircle2 className="h-4 w-4 flex-shrink-0 text-emerald-600 mt-0.5" />
-                    <div>
-                      <span className="font-semibold text-slate-900">Valid PDF Syntax & Stream</span>
-                      <p className="text-slate-500">Document structure is compliant and readable.</p>
-                    </div>
-                  </div>
-
-                  <div className="flex items-start gap-2.5">
-                    <CheckCircle2 className="h-4 w-4 flex-shrink-0 text-emerald-600 mt-0.5" />
-                    <div>
-                      <span className="font-semibold text-slate-900">Page Count Parity</span>
-                      <p className="text-slate-500">
-                        Exact match: {document.page_count} of {document.page_count} pages preserved.
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="flex items-start gap-2.5">
-                    <CheckCircle2 className="h-4 w-4 flex-shrink-0 text-emerald-600 mt-0.5" />
-                    <div>
-                      <span className="font-semibold text-slate-900">Old Credentials Purged</span>
-                      <p className="text-slate-500">Target strings cleanly excised from all pages.</p>
-                    </div>
-                  </div>
-
-                  <div className="flex items-start gap-2.5">
-                    <CheckCircle2 className="h-4 w-4 flex-shrink-0 text-emerald-600 mt-0.5" />
-                    <div>
-                      <span className="font-semibold text-slate-900">Labels & Vector Drawings Intact</span>
-                      <p className="text-slate-500">
-                        Field prefixes, tables, and borders are 100% undamaged.
-                      </p>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Warnings or notices if any */}
-                {latestResult && latestResult.warnings && latestResult.warnings.length > 0 && (
-                  <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
-                    <div className="font-semibold flex items-center gap-1.5">
-                      <AlertTriangle className="h-3.5 w-3.5 text-amber-600" />
-                      Layout Notices:
-                    </div>
-                    <ul className="mt-1 list-disc pl-4 space-y-0.5 text-[11px]">
-                      {latestResult.warnings.map((w, idx) => (
-                        <li key={idx}>{w}</li>
-                      ))}
-                    </ul>
-                  </div>
+          {currentStep === 4 && (
+            <div className="flex-1 flex items-center gap-2">
+              <button
+                onClick={handleDownload}
+                disabled={isDownloading}
+                className="flex-1 h-11 rounded-full bg-gradient-to-r from-primary to-secondary text-on-primary font-label-md text-label-md flex items-center justify-center gap-1.5 shadow-sm active:scale-[0.98] transition-transform disabled:opacity-50"
+              >
+                {isDownloading ? (
+                  <span className="material-symbols-outlined text-[18px] animate-spin">progress_activity</span>
+                ) : (
+                  <span className="material-symbols-outlined text-[18px]">download</span>
                 )}
-              </div>
-
-              {/* Replacements Summary Table */}
-              <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-                <h3 className="text-sm font-bold text-slate-900">Applied Replacements</h3>
-                <div className="mt-3 overflow-hidden rounded-xl border border-slate-200">
-                  <table className="min-w-full divide-y divide-slate-200 text-left text-xs">
-                    <thead className="bg-slate-50 text-slate-500 font-semibold">
-                      <tr>
-                        <th className="px-3 py-2">Field</th>
-                        <th className="px-3 py-2">Inserted Value</th>
-                        <th className="px-3 py-2 text-right">Status</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 bg-white">
-                      {latestResult && latestResult.occurrence_results && latestResult.occurrence_results.length > 0 ? (
-                        latestResult.occurrence_results.map((item, idx) => (
-                          <tr key={idx}>
-                            <td className="px-3 py-2 font-medium text-slate-800">
-                              {getFieldLabel(item.field_id)} (p. {item.page_number})
-                            </td>
-                            <td className="px-3 py-2 font-mono text-[11px] text-slate-900">
-                              {item.inserted_value}
-                            </td>
-                            <td className="px-3 py-2 text-right">
-                              <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
-                                {item.status}
-                              </span>
-                            </td>
-                          </tr>
-                        ))
-                      ) : (
-                        confirmedFields.map((field) => (
-                          <tr key={field.field_id}>
-                            <td className="px-3 py-2 font-medium text-slate-800">
-                              {getFieldLabel(field.field_type)}
-                            </td>
-                            <td className="px-3 py-2 font-mono text-[11px] text-slate-900">
-                              {replacementValues[field.field_id] || 'Updated'}
-                            </td>
-                            <td className="px-3 py-2 text-right">
-                              <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
-                                success
-                              </span>
-                            </td>
-                          </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-
-                <div className="mt-5 flex items-center justify-between">
-                  <button
-                    onClick={() => navigate('/dashboard')}
-                    className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600 hover:text-slate-900"
-                  >
-                    <ArrowLeft className="h-3.5 w-3.5" />
-                    Back to Library
-                  </button>
-
-                  <a
-                    href={api.personalization.getDownloadUrl(documentId)}
-                    target="_blank"
-                    rel="noreferrer"
-                    download
-                    className="inline-flex items-center gap-1 text-xs font-bold text-indigo-600 hover:text-indigo-700"
-                  >
-                    Download copy
-                    <ExternalLink className="h-3 w-3" />
-                  </a>
-                </div>
-              </div>
+                <span>{isDownloading ? 'Downloading...' : 'Download PDF'}</span>
+              </button>
+              <button
+                onClick={handleShare}
+                className="h-11 px-4 rounded-full bg-surface-container text-on-surface font-label-md text-label-md flex items-center justify-center gap-1.5 active:bg-surface-container-high transition-colors shrink-0"
+                title="Share PDF"
+              >
+                <span className="material-symbols-outlined text-[18px] text-secondary">share</span>
+                <span className="text-xs font-semibold">Share</span>
+              </button>
             </div>
-          </div>
+          )}
         </div>
-      )}
+      </aside>
     </div>
   );
 };

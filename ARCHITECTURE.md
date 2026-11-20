@@ -14,27 +14,33 @@ DocMorph is designed as a **100% offline, privacy-first Android application**.
     │  (Rendered via local pdfjs-dist worker in PdfViewer.tsx)
     ▼
 [Automatic Detection OR Smart Manual Selection]
-    │  - Automatic: DetectionOrchestrator runs multi-modal scan
+    │  - Automatic: DetectionOrchestrator runs 4-pass page-by-page scan with cross-page propagation
     │  - Smart Manual: User draws rectangle or highlights text via SmartSelectionOverlay
     ▼
-[Phase B Footer Verification Layer]
+[Phase B Footer Verification & Adaptive Boundary]
     │  - Evaluates layout compactness, separator lines, academic stop words
+    │  - Adaptive boundary detects footers with variable vertical positions (up to 80pt variance)
     │  - Produces canonical status: CONFIRMED / NOT_FOUND / UNCERTAIN / UNREADABLE
     ▼
-[Student Identity Extraction]
-    │  - Matches explicit labels (Name:, Enrollment No:, Roll No:)
+[Student Identity Extraction & Multi-Page Aggregation]
+    │  - Matches explicit labels (Name:, Enrollment No:, Roll No:) across all pages
     │  - Identifies unlabelled identity pairs: Name (ID)
+    │  - Propagates verified identity values to other pages' header/footer zones
+    │  - Aggregates multi-page occurrences without dropping page indices
     ▼
 [Profile Matching & Replacement Plan Preview]
     │  - Compares detected original values with local saved student profile
-    │  - User reviews and confirms proposed replacements
+    │  - Expands confirmed fields across all page occurrences in candidate cache
     ▼
 [PDF Personalization Engine]
     │  - PdfPersonalizerService & ContentStreamRedactor rewrite text in PDF stream
+    │  - Recursively inspects and redacts shared Form XObjects (/PDFormXObject)
     │  - Adaptive typography scaling preserves font sizes and visual baseline
+    │  - Scanned pages receive raster white background patching before vector insertion
     ▼
 [Output Verification & Storage]
-    │  - OutputVerifier verifies output file integrity and non-empty streams
+    │  - OutputVerifier conducts per-page independent audit (PageVerificationResult)
+    │  - Confirms old identity values absent and new values present
     │  - Stored in files/personalized/<id>_personalized.pdf
     │  - Original SHA-256 verified unchanged
     ▼

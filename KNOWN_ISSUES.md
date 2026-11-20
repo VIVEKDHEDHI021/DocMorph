@@ -39,3 +39,8 @@ Documented known issues, workarounds, and engineering edge cases in DocMorph.
 ### Non-Standard or Embedded Subset Fonts
 - **Symptom:** PDFs where custom or proprietary fonts are embedded as subsets without a standard Unicode mapping table (`/ToUnicode` CMap missing).
 - **Handling:** `TypographyFormatter.kt` and `ContentStreamRedactor.kt` fall back to standard PDF typefaces (`Helvetica`, `Times-Roman`) with matched font size and baseline vertical positioning, preserving the visual layout without corrupting stream operators.
+
+### Resolved Multi-Page Identity Dropping (Bug 1 & Bug 2)
+- **Status:** Resolved in Phase F.
+- **Previous Symptom:** Footers on subsequent pages remained unchanged or undetected.
+- **Resolution:** Replaced single-candidate mapping with multi-page occurrence expansion in `localDocService.ts`; enabled Form XObject traversal in `ContentStreamRedactor.kt`; enabled adaptive vertical bounds and cross-page identity propagation.

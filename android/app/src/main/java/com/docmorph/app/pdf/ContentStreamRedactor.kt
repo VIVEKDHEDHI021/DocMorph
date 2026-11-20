@@ -13,6 +13,7 @@ import com.tom_roush.pdfbox.pdfwriter.ContentStreamWriter
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.PDPage
 import com.tom_roush.pdfbox.pdmodel.common.PDStream
+import com.tom_roush.pdfbox.pdmodel.graphics.form.PDFormXObject
 import com.tom_roush.pdfbox.util.Matrix
 import java.util.ArrayDeque
 import kotlin.math.max
@@ -29,12 +30,15 @@ class ContentStreamRedactor {
     /**
      * Rewrites the page content stream to remove text-showing operators intersecting
      * the target redaction regions, preserving all vector lines, borders, and images.
+     * Also recursively inspects and redacts within Form XObjects (e.g. repeated footers).
      */
     fun redactPage(document: PDDocument, page: PDPage, targets: List<RedactionTarget>): Int {
         if (targets.isEmpty()) return 0
 
         val cropBox = page.cropBox ?: page.mediaBox
         val pageHeight = cropBox.height
+        val originX = cropBox.lowerLeftX
+        val originY = cropBox.lowerLeftY
 
         // Convert targets to user space (bottom-up coordinates)
         val userTargets = targets.map { target ->
@@ -45,28 +49,81 @@ class ContentStreamRedactor {
 
             UserTarget(
                 originalText = target.originalText.trim(),
-                pdfX0 = x0 - 3.0f,
-                pdfX1 = x1 + 3.0f,
-                pdfY0 = (pageHeight - y1) - 3.0f,
-                pdfY1 = (pageHeight - y0) + 3.0f
+                pdfX0 = originX + x0 - 4.0f,
+                pdfX1 = originX + x1 + 4.0f,
+                pdfY0 = originY + (pageHeight - y1) - 4.0f,
+                pdfY1 = originY + (pageHeight - y0) + 4.0f
             )
         }
 
+        var totalPurged = 0
+
+        // 1. Redact direct page content stream
         val parser: PDFStreamParser
         try {
             parser = PDFStreamParser(page)
             parser.parse()
-        } catch (e: Exception) {
-            return 0
-        }
+            val tokens = parser.tokens
+            if (tokens.isNotEmpty()) {
+                val (newTokens, purged) = redactTokenStream(page, tokens, userTargets)
+                if (purged > 0) {
+                    val newStream = PDStream(document)
+                    val out = newStream.createOutputStream(COSName.FLATE_DECODE)
+                    val writer = ContentStreamWriter(out)
+                    writer.writeTokens(newTokens)
+                    out.close()
+                    page.setContents(newStream)
+                    totalPurged += purged
+                }
+            }
+        } catch (_: Exception) {}
 
-        val tokens = parser.tokens
-        if (tokens.isEmpty()) return 0
+        // 2. Redact text within Form XObjects referenced by this page (repeated footers/headers)
+        try {
+            val resources = page.resources
+            if (resources != null) {
+                for (name in resources.xObjectNames) {
+                    try {
+                        val xobj = resources.getXObject(name)
+                        if (xobj is PDFormXObject) {
+                            val formParser = PDFStreamParser(xobj)
+                            formParser.parse()
+                            val formTokens = formParser.tokens
+                            if (formTokens.isNotEmpty()) {
+                                val (newFormTokens, formPurged) = redactTokenStream(page, formTokens, userTargets)
+                                if (formPurged > 0) {
+                                    val out = xobj.cosObject.createOutputStream(COSName.FLATE_DECODE)
+                                    val writer = ContentStreamWriter(out)
+                                    writer.writeTokens(newFormTokens)
+                                    out.close()
+                                    totalPurged += formPurged
+                                }
+                            }
+                        }
+                    } catch (_: Exception) {}
+                }
+            }
+        } catch (_: Exception) {}
 
+        return totalPurged
+    }
+
+    private data class UserTarget(
+        val originalText: String,
+        val pdfX0: Float,
+        val pdfX1: Float,
+        val pdfY0: Float,
+        val pdfY1: Float
+    )
+
+    private fun redactTokenStream(
+        page: PDPage,
+        tokens: List<Any>,
+        userTargets: List<UserTarget>
+    ): Pair<List<Any>, Int> {
         val newTokens = mutableListOf<Any>()
         val currentArgs = mutableListOf<COSBase>()
 
-        // Graphics and Text State tracking
         val ctmStack = ArrayDeque<Matrix>()
         var ctm = Matrix()
         var textMatrix = Matrix()
@@ -213,10 +270,8 @@ class ContentStreamRedactor {
 
                         if (matched) {
                             purgedCount++
-                            // Advance text matrix to preserve downstream layout if needed
                             val advanceMatrix = Matrix.getTranslateInstance(stringWidth, 0f)
                             textMatrix = advanceMatrix.multiply(textMatrix)
-                            // Do not output Tj or its argument -> text operator completely removed
                         } else {
                             newTokens.addAll(currentArgs)
                             newTokens.add(token)
@@ -254,7 +309,6 @@ class ContentStreamRedactor {
                                         currentX += itemWidth
                                     }
                                 } else if (item is COSNumber) {
-                                    // Kerning offset in thousandths of a unit of text space
                                     val kerning = -item.floatValue() / 1000f * currentFontSize
                                     currentX += kerning
                                     filteredArray.add(item)
@@ -263,8 +317,11 @@ class ContentStreamRedactor {
                                 }
                             }
 
-                            val hasStringLeft = (0 until filteredArray.size()).any { filteredArray.get(it) is COSString }
-                            if (hasStringLeft) {
+                            val advanceW = currentX - totalMatrix.translateX
+                            val advanceMatrix = Matrix.getTranslateInstance(advanceW, 0f)
+                            textMatrix = advanceMatrix.multiply(textMatrix)
+
+                            if (filteredArray.size() > 0) {
                                 newTokens.add(filteredArray)
                                 newTokens.add(token)
                             }
@@ -275,7 +332,6 @@ class ContentStreamRedactor {
                         currentArgs.clear()
                     }
                     "'" -> {
-                        // Move to next line and show string
                         val tdMatrix = Matrix.getTranslateInstance(0f, -textLeading)
                         textLineMatrix = tdMatrix.multiply(textLineMatrix)
                         textMatrix = textLineMatrix.clone()
@@ -295,24 +351,36 @@ class ContentStreamRedactor {
 
                         if (matched) {
                             purgedCount++
-                            // Replace with T* so line advance is preserved without drawing text
-                            newTokens.add(Operator.getOperator("T*"))
+                            val advanceMatrix = Matrix.getTranslateInstance(stringWidth, 0f)
+                            textMatrix = advanceMatrix.multiply(textMatrix)
                         } else {
                             newTokens.addAll(currentArgs)
                             newTokens.add(token)
+                            val advanceMatrix = Matrix.getTranslateInstance(stringWidth, 0f)
+                            textMatrix = advanceMatrix.multiply(textMatrix)
                         }
                         currentArgs.clear()
                     }
                     "\"" -> {
-                        // Sets spacing, moves to next line, shows string
+                        if (currentArgs.size >= 3) {
+                            val tx = getFloat(currentArgs[0])
+                            val ty = getFloat(currentArgs[1])
+                            val tdMatrix = Matrix.getTranslateInstance(tx, ty)
+                            textLineMatrix = tdMatrix.multiply(textLineMatrix)
+                            textMatrix = textLineMatrix.clone()
+                        }
+
+                        val totalMatrix = textMatrix.multiply(ctm)
+                        val userX = totalMatrix.translateX
+                        val userY = totalMatrix.translateY
+
                         val cosString = currentArgs.lastOrNull() as? COSString
                         val rawStr = cosString?.string ?: ""
                         val decodedText = decodeString(page, currentFontName, cosString, rawStr)
+                        val stringWidth = estimateStringWidth(decodedText, currentFontSize)
 
                         val matched = userTargets.any { target ->
-                            target.originalText.isNotEmpty() &&
-                            (decodedText.contains(target.originalText, ignoreCase = true) ||
-                             target.originalText.contains(decodedText, ignoreCase = true))
+                            isTargetMatch(userX, userY, stringWidth, currentFontSize, target, decodedText)
                         }
 
                         if (matched) {
@@ -325,7 +393,6 @@ class ContentStreamRedactor {
                         currentArgs.clear()
                     }
                     else -> {
-                        // Vector graphics (m, l, c, re, S, s, f, F, f*, B, b, etc.), images (Do), state (w, J, j, d, etc.)
                         newTokens.addAll(currentArgs)
                         newTokens.add(token)
                         currentArgs.clear()
@@ -334,28 +401,8 @@ class ContentStreamRedactor {
             }
         }
 
-        // Apply rewritten content stream back to page
-        try {
-            val newStream = PDStream(document)
-            val out = newStream.createOutputStream(COSName.FLATE_DECODE)
-            val writer = ContentStreamWriter(out)
-            writer.writeTokens(newTokens)
-            out.close()
-            page.setContents(newStream)
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-
-        return purgedCount
+        return Pair(newTokens, purgedCount)
     }
-
-    private data class UserTarget(
-        val originalText: String,
-        val pdfX0: Float,
-        val pdfX1: Float,
-        val pdfY0: Float,
-        val pdfY1: Float
-    )
 
     private fun isTargetMatch(
         userX: Float,
@@ -369,21 +416,22 @@ class ContentStreamRedactor {
         val stringX1 = userX + width
 
         // Vertical overlap with baseline/box
-        val verticalOverlap = (userY >= target.pdfY0 - 4f && userY <= target.pdfY1 + 4f)
+        val verticalOverlap = (userY >= target.pdfY0 - 5f && userY <= target.pdfY1 + 5f)
 
         // Horizontal overlap with target bounding box
-        val horizontalOverlap = max(stringX0, target.pdfX0) <= min(stringX1, target.pdfX1) + 2f
+        val horizontalOverlap = max(stringX0, target.pdfX0) <= min(stringX1, target.pdfX1) + 3f
 
         val cleanText = text.trim()
         val cleanTarget = target.originalText
 
-        // Content match check
+        // Content match check with horizontal proximity safeguard
+        val horizontalProximity = max(stringX0, target.pdfX0) <= min(stringX1, target.pdfX1) + 40f
         val textMatch = cleanTarget.isNotEmpty() && cleanText.isNotEmpty() && (
             cleanTarget.contains(cleanText, ignoreCase = true) ||
             cleanText.contains(cleanTarget, ignoreCase = true)
         )
 
-        return (verticalOverlap && horizontalOverlap) || (verticalOverlap && textMatch)
+        return (verticalOverlap && horizontalOverlap) || (verticalOverlap && horizontalProximity && textMatch)
     }
 
     private fun decodeString(page: PDPage, fontName: String?, cosString: COSString?, rawStr: String): String {

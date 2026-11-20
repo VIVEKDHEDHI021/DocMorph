@@ -53,6 +53,7 @@ export interface DetectionCandidate {
   fontSize?: number;
   pairId?: string | null;
   requiresConfirmation: boolean;
+  isOcr?: boolean;
 }
 
 export interface DocumentAnalysisResult {

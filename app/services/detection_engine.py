@@ -11,6 +11,7 @@ Orchestrates the Phase 2 detection pipeline:
 8. Produces structured DetectionResult models supporting human-in-the-loop review.
 """
 
+from collections import defaultdict
 import hashlib
 from pathlib import Path
 from typing import Optional
@@ -24,9 +25,11 @@ from app.core.exceptions import (
     PDFValidationError,
 )
 from app.schemas.detection_data import (
+    BoundingBox,
     ConfidenceLevel,
     DetectionResult,
     DetectionSummary,
+    FieldOccurrence,
     FieldType,
     ReviewStatus,
 )
@@ -308,6 +311,67 @@ class DetectionEngine:
         except Exception:
             # Fall back gracefully to rule-based extractions if AI pipeline encounters an unexpected format
             pass
+
+        # Pass 4: Cross-page identity propagation for unlabelled occurrences
+        # If an unambiguous identity value (name or enrollment) was verified on other pages,
+        # propagate to pages that contain the exact text in a footer/header region.
+        known_identities: dict[FieldType, set[str]] = defaultdict(set)
+        for ev in all_extracted_values:
+            if not ev.is_ambiguous and len(ev.value.strip()) >= 3:
+                known_identities[ev.field_type].add(ev.value.strip())
+
+        for field_type, values in known_identities.items():
+            for val in values:
+                for page_idx in range(1, total_pages + 1):
+                    already_has = any(
+                        ev.field_type == field_type
+                        and ev.occurrence.page_number == page_idx
+                        and ev.value.strip().lower() == val.lower()
+                        for ev in all_extracted_values
+                    )
+                    if already_has:
+                        continue
+
+                    page = doc[page_idx - 1]
+                    page_height = page.rect.height
+                    lines = structured_pages.get(page_idx, [])
+                    found = False
+                    for line in lines:
+                        mid_y = (line.bbox.y0 + line.bbox.y1) / 2.0
+                        is_safe_region = line.is_in_footer or (mid_y >= page_height * 0.80) or (mid_y <= page_height * 0.25)
+                        if not is_safe_region:
+                            continue
+                        if val.lower() in line.text.lower():
+                            rects = page.search_for(val)
+                            for rect in rects:
+                                r_mid_y = (rect.y0 + rect.y1) / 2.0
+                                if r_mid_y <= page_height * 0.25 or r_mid_y >= page_height * 0.80 or line.is_in_footer:
+                                    bbox = BoundingBox(x0=rect.x0, y0=rect.y0, x1=rect.x1, y1=rect.y1)
+                                    occ = FieldOccurrence(
+                                        page_number=page_idx,
+                                        bbox=bbox,
+                                        value_bbox=bbox,
+                                        label_bbox=None,
+                                        raw_text=line.text,
+                                        matched_label="",
+                                        is_in_footer_region=line.is_in_footer or (r_mid_y >= page_height * 0.80),
+                                        line_bbox=line.bbox,
+                                    )
+                                    all_extracted_values.append(
+                                        ExtractedFieldValue(
+                                            field_type=field_type,
+                                            matched_label="",
+                                            value=val,
+                                            is_ambiguous=False,
+                                            ambiguity_reason=None,
+                                            occurrence=occ,
+                                            is_unlabelled=True,
+                                        )
+                                    )
+                                    found = True
+                                    break
+                        if found:
+                            break
 
         # Layer 6 & 7: Grouping, Multi-page Occurrences, and Conflict Detection
         detected_fields, conflicts = self.field_grouper.group_and_resolve(

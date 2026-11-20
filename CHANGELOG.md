@@ -4,6 +4,27 @@ All notable changes to the DocMorph PDF personalization engine.
 
 ---
 
+## [UI Redesign: Liquid Glass & Mobile Workspace Integration] - 2026-11-19
+### Added
+- Integrated mobile app design system from `stitch_docmorph_mobile_app_ui` into DocMorph frontend.
+- Embedded Google Fonts `Inter` and `Material Symbols Outlined` in `index.html`.
+- Extended Tailwind configuration with semantic color palette (`surface`, `surface-container-*`, `primary`, `secondary`, `tertiary`, `primary-fixed*`).
+- Upgraded `CompactHeader.tsx` with glass blur backdrop and profile access capsule.
+- Upgraded `FloatingGlassNavigation.tsx` with suspended liquid glass capsule, symmetrical illumination items, and central iridescent add action.
+- Modernized `DocumentCard.tsx` with Level 1 solid card boundaries, status chips, and typography metrics.
+- Re-architected `PdfViewer.tsx` with interactive canvas controls, sticky stage pill, fit-screen controls, and page margin bar.
+- Redesigned `WorkspacePage.tsx` with continuous render viewport, AI layout extraction callout card with gradient orb blur, and fixed liquid glass bottom action bar dock.
+
+## [Phase F] - 2026-11-18
+### Added
+- Multi-page page-by-page detection with cross-page identity propagation.
+- Occurrence-level aggregation preserving all occurrences across pages under unified identity fields.
+- Multi-page replacement expansion across all candidate occurrences in `localDocService.ts`.
+- Form XObject (`PDFormXObject`) recursive traversal and stream redaction in `ContentStreamRedactor.kt`.
+- Per-page verification auditing (`PageVerificationResult`) in `OutputVerifier.kt`.
+- 14-scenario multi-page regression suite in `tests/test_multipage_detection_replacement.py`.
+- Comprehensive root cause and fix report: `MULTIPAGE_DETECTION_REPLACEMENT_FIX_REPORT.md`.
+
 ## [Phase E] - 2026-11-15
 ### Added
 - Integrated Smart Manual Detection with complete PDF personalization workflow.

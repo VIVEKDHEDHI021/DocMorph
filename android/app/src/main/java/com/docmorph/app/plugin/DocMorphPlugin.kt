@@ -465,6 +465,7 @@ class DocMorphPlugin : Plugin() {
             obj.put("fontSize", c.fontSize)
             obj.put("pairId", c.pairId)
             obj.put("requiresConfirmation", c.requiresConfirmation)
+            obj.put("isOcr", c.isOcr)
 
             array.put(obj)
         }
@@ -670,6 +671,27 @@ class DocMorphPlugin : Plugin() {
                 ret.put("originalSha256", result.originalSha256)
                 ret.put("personalizedSha256", result.personalizedSha256)
                 ret.put("verificationPassed", result.verificationReport.passed)
+
+                val vrObj = JSObject()
+                vrObj.put("passed", result.verificationReport.passed)
+                vrObj.put("totalChecks", result.verificationReport.totalChecks)
+                val pageArr = JSArray()
+                for (pr in result.verificationReport.pageResults) {
+                    val pObj = JSObject()
+                    pObj.put("pageIndex", pr.pageIndex)
+                    pObj.put("pageNumber", pr.pageNumber)
+                    pObj.put("passed", pr.passed)
+                    pObj.put("status", pr.status)
+                    val pErr = JSArray()
+                    pr.errors.forEach { pErr.put(it) }
+                    pObj.put("errors", pErr)
+                    val pWarn = JSArray()
+                    pr.warnings.forEach { pWarn.put(it) }
+                    pObj.put("warnings", pWarn)
+                    pageArr.put(pObj)
+                }
+                vrObj.put("pageResults", pageArr)
+                ret.put("verificationReport", vrObj)
 
                 val warningsArray = JSArray()
                 for (w in result.warnings) {

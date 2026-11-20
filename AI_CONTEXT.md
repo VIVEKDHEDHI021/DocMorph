@@ -59,11 +59,18 @@ DocMorph is a **100% offline, on-device Android application** designed to person
   - Frontend Bridge: `frontend/src/services/localDocService.ts`, `nativeDocMorph.ts`
   - Workflow Page: `frontend/src/pages/WorkspacePage.tsx` (4-Step Guided Workflow).
 
+- **Multi-Page Detection & Replacement (Phase F):**
+  - Page-by-page independent evaluation in `DetectionOrchestrator.kt` and `detection_engine.py` (Pass 1-4).
+  - Occurrence-level multi-page aggregation in `localDocService.ts`.
+  - Form XObject traversal & redaction in `ContentStreamRedactor.kt`.
+  - Independent post-replacement per-page verification in `OutputVerifier.kt`.
+  - Multi-page regression test suite: `tests/test_multipage_detection_replacement.py` (14 scenarios).
+
 ---
 
 ## 4. Testing & Verification Rules
 
-- **Python Tests:** `pytest -q` (168 tests, 100% pass rate).
+- **Python Tests:** `pytest -q` (182 tests, 100% pass rate).
 - **Frontend Build:** `npm --prefix frontend run build` (`tsc && vite build`).
-- **Android Gradle Build:** `cd android; ./gradlew.bat compileDebugSources`.
+- **Android Gradle Build:** `cd android; ./gradlew.bat compileDebugSources && ./gradlew.bat test`.
 - **Honesty Rule:** Never claim a test passed if it was not executed; report all failures transparently.

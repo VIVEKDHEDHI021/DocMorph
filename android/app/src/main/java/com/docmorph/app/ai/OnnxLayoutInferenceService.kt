@@ -130,12 +130,29 @@ class OnnxLayoutInferenceService(private val context: Context) {
                 cleanVal = rawVal.replace(Regex("[()\\[\\]\\-|,;:]"), "").trim()
             }
 
+            if (currEntityType in listOf("enrollment_number", "roll_number", "student_id")) {
+                val hasCodeOrStop = UnlabelledIdentityDetector.ACADEMIC_STOP_WORDS.any { stop ->
+                    cleanVal.lowercase().contains(stop)
+                } || UnlabelledIdentityDetector.CODE_AND_TECHNICAL_WORDS.any { code ->
+                    cleanVal.lowercase().split(Regex("[^a-z0-9]+")).contains(code)
+                }
+                val proseWords = setOf("step", "visualization", "practical", "exercise", "question", "figure", "table", "chart", "graph", "chapter", "section", "aim", "output", "dataset")
+                val isProse = cleanVal.lowercase().split(Regex("[^a-z0-9]+")).any { proseWords.contains(it) }
+                val hasWhitespace = cleanVal.contains(" ")
+                if (hasCodeOrStop || isProse || hasWhitespace || !cleanVal.any { it.isDigit() }) {
+                    cleanVal = ""
+                }
+            }
+
             if (currEntityType == "student_name") {
                 val words = cleanVal.split(Regex("[\\s.\\-]+")).filter { it.isNotEmpty() }
                 val isAcademic = UnlabelledIdentityDetector.ACADEMIC_STOP_WORDS.any { stop ->
                     cleanVal.lowercase().contains(stop)
                 }
-                if (isAcademic || words.size < 2) {
+                val isCode = UnlabelledIdentityDetector.CODE_AND_TECHNICAL_WORDS.any { code ->
+                    cleanVal.lowercase().split(Regex("[^a-z0-9]+")).contains(code)
+                }
+                if (isAcademic || isCode || words.size < 2) {
                     cleanVal = ""
                 }
             }

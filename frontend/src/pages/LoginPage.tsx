@@ -53,9 +53,11 @@ export const LoginPage: React.FC = () => {
       <div className="w-full max-w-md space-y-8">
         {/* Header */}
         <div className="text-center">
-          <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-indigo-600 shadow-lg shadow-indigo-200">
-            <FileText className="h-8 w-8 text-white" />
-          </div>
+          <img
+            src="/logo.png"
+            alt="DocMorph"
+            className="mx-auto h-16 w-16 rounded-2xl object-cover shadow-lg shadow-indigo-200"
+          />
           <h2 className="mt-6 text-3xl font-extrabold tracking-tight text-slate-900">
             Welcome back to DocMorph
           </h2>

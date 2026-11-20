@@ -174,6 +174,11 @@ class DetectedField(BaseModel):
         default_factory=list, description="All spatial occurrences of this field across pages"
     )
 
+    @property
+    def pages(self) -> list[int]:
+        """Returns sorted unique 1-indexed page numbers where this field occurs."""
+        return sorted({occ.page_number for occ in self.occurrences})
+
     def confirm(self) -> "DetectedField":
         """Marks the detection as confirmed by user."""
         self.status = ReviewStatus.CONFIRMED

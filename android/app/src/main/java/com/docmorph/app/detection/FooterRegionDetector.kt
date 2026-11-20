@@ -179,20 +179,26 @@ class FooterRegionDetector {
         // --- C. Semantic Evidence Checks (Supporting Only) ---
         val hasIdPair = Regex("""([A-Za-z\s.'-]{3,35})\s*[\(\[]\s*(\d{6,18}|[A-Za-z0-9\-_]{5,20})\s*[\)\]]""").containsMatchIn(combinedFooterText) ||
                         Regex("""([A-Za-z\s.'-]{3,35})\s*[-–—|]\s*(\d{6,18})""").containsMatchIn(combinedFooterText)
-        if (hasIdPair && negativeScore < 30f) {
-            semanticScore += 35f
+        if (hasIdPair) {
+            semanticScore += 45f
+            // If explicit student pair is found in footer zone, reduce spurious negative score from adjacent body words
+            negativeScore = max(0f, negativeScore - 30f)
         }
 
         val hasExplicitLabels = Regex("""(?i)\b(?:name|enrollment(?:\s*no\.?)?|roll(?:\s*no\.?)?|student\s*id)\s*:""").containsMatchIn(combinedFooterText)
-        if (hasExplicitLabels && negativeScore < 30f) {
-            semanticScore += 30f
+        if (hasExplicitLabels) {
+            semanticScore += 35f
+            negativeScore = max(0f, negativeScore - 20f)
         }
 
         val netScore = (layoutScore + semanticScore) - negativeScore
 
         val status: FooterStatus
         val conf: Float
-        if (negativeScore >= 40f) {
+        if (hasIdPair || hasExplicitLabels) {
+            status = if (netScore >= 35f) FooterStatus.FOOTER_CONFIRMED else FooterStatus.FOOTER_UNCERTAIN
+            conf = min(0.98f, max(0.75f, netScore / 100f))
+        } else if (negativeScore >= 40f) {
             status = FooterStatus.FOOTER_NOT_FOUND
             conf = max(0.85f, min(0.99f, negativeScore / 100f))
         } else if (netScore >= 50f && layoutScore >= 20f) {
@@ -259,8 +265,13 @@ class FooterRegionDetector {
 
         for (p in prelims) {
             if (p.status == FooterStatus.FOOTER_CONFIRMED && totalPages >= 2) {
-                val matchingCount = validConfirmedPages.count { abs(it.boundaryY - p.boundaryY) <= 10f }
-                val mpBonus = if (matchingCount >= 2) 20f else 0f
+                // Adaptive multi-page matching: supports variable vertical offsets (up to 80pt) across pages
+                val matchingCount = validConfirmedPages.count { other ->
+                    abs(other.boundaryY - p.boundaryY) <= 80f ||
+                    (p.candidateTexts.isNotEmpty() && other.candidateTexts.isNotEmpty() &&
+                     other.candidateTexts.any { tc -> p.candidateTexts.any { pc -> tc.contains(pc) || pc.contains(tc) } })
+                }
+                val mpBonus = if (matchingCount >= 2) 20f else if (matchingCount >= 1) 10f else 0f
                 val updatedEvidence = p.evidence.copy(
                     multiPageScore = mpBonus,
                     totalScore = p.evidence.totalScore + mpBonus

@@ -1,18 +1,16 @@
 import React, { Suspense, lazy } from 'react';
-import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AuthProvider, useAuth } from './hooks/useAuth';
 import { RootLayout } from './layouts/RootLayout';
-import { LandingPage } from './pages/LandingPage';
+import { HomePage } from './pages/HomePage';
 import { Loader2 } from 'lucide-react';
 
 import { NativeService } from './services/nativeService';
 
 // Lazy-loaded routes for code-splitting
-const LoginPage = lazy(() => import('./pages/LoginPage').then((m) => ({ default: m.LoginPage })));
-const SignupPage = lazy(() => import('./pages/SignupPage').then((m) => ({ default: m.SignupPage })));
-const DashboardPage = lazy(() => import('./pages/DashboardPage').then((m) => ({ default: m.DashboardPage })));
 const WorkspacePage = lazy(() => import('./pages/WorkspacePage').then((m) => ({ default: m.WorkspacePage })));
+const HistoryPage = lazy(() => import('./pages/HistoryPage').then((m) => ({ default: m.HistoryPage })));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -81,10 +79,10 @@ class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundarySta
               Reload Page
             </button>
             <a
-              href="/dashboard"
+              href="/"
               className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-semibold text-slate-700 shadow-sm hover:bg-slate-50"
             >
-              Back to Dashboard
+              Back to Home
             </a>
           </div>
         </div>
@@ -93,14 +91,6 @@ class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundarySta
     return this.props.children;
   }
 }
-
-// Index Route (Native goes directly to Dashboard/Studio)
-const IndexRoute: React.FC = () => {
-  if (NativeService.isNative()) {
-    return <Navigate to="/dashboard" replace />;
-  }
-  return <LandingPage />;
-};
 
 // Protected Route Guard (supports seamless account-free session)
 const ProtectedRoute: React.FC<{ children: React.ReactElement }> = ({ children }) => {
@@ -126,20 +116,17 @@ export const App: React.FC = () => {
             <Suspense fallback={<PageLoadingFallback />}>
               <Routes>
                 <Route element={<RootLayout />}>
-                  {/* Public Routes */}
-                  <Route path="/" element={<IndexRoute />} />
-                  <Route path="/login" element={<Navigate to="/dashboard" replace />} />
-                  <Route path="/signup" element={<Navigate to="/dashboard" replace />} />
+                  {/* Single Consolidated Home Screen */}
+                  <Route path="/" element={<HomePage />} />
+                  <Route path="/history" element={<HistoryPage />} />
+                  <Route path="/home" element={<Navigate to="/" replace />} />
+                  <Route path="/dashboard" element={<Navigate to="/" replace />} />
+                  <Route path="/login" element={<Navigate to="/" replace />} />
+                  <Route path="/signup" element={<Navigate to="/" replace />} />
+                  <Route path="/features" element={<Navigate to="/" replace />} />
+                  <Route path="/how-it-works" element={<Navigate to="/" replace />} />
 
-                  {/* Protected Routes */}
-                  <Route
-                    path="/dashboard"
-                    element={
-                      <ProtectedRoute>
-                        <DashboardPage />
-                      </ProtectedRoute>
-                    }
-                  />
+                  {/* Document Workspace */}
                   <Route
                     path="/workspace/:documentId"
                     element={

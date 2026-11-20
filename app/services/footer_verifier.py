@@ -139,9 +139,14 @@ class FooterVerifier:
 
             net_score = (layout_score + raw_multi_page + semantic_score) - negative_score
 
+            has_id_pair = prelim.get("has_id_pair", False)
+            has_explicit_labels = prelim.get("has_explicit_labels", False)
+
             # Decide page status
-            # Strong negative evidence (score >= 40) directly vetoes confirmed status
-            if negative_score >= 40.0:
+            if has_id_pair or has_explicit_labels:
+                page_status = FooterStatus.FOOTER_CONFIRMED if net_score >= 35.0 else FooterStatus.FOOTER_UNCERTAIN
+                confidence = min(0.98, max(0.75, (net_score / 100.0)))
+            elif negative_score >= 40.0:
                 page_status = FooterStatus.FOOTER_NOT_FOUND
                 confidence = max(0.80, min(0.99, negative_score / 100.0))
             elif net_score >= 50.0 and layout_score >= 20.0:
@@ -354,15 +359,17 @@ class FooterVerifier:
             re.search(r"([A-Za-z\s.'-]{3,35})\s*[\(\[]\s*(\d{6,18}|[A-Za-z0-9\-_]{5,20})\s*[\)\]]", combined_footer_text)
             or re.search(r"([A-Za-z\s.'-]{3,35})\s*[-–—|]\s*(\d{6,18})", combined_footer_text)
         )
-        if has_id_pair and negative_score < 30.0:
-            semantic_score += 35.0
+        if has_id_pair:
+            semantic_score += 45.0
+            negative_score = max(0.0, negative_score - 30.0)
 
         # 2. Explicit label markers: "Name:", "Enrollment:", "Roll No:"
         has_explicit_labels = bool(
             re.search(r"(?i)\b(?:name|enrollment(?:\s*no\.?)?|roll(?:\s*no\.?)?|student\s*id)\s*:", combined_footer_text)
         )
-        if has_explicit_labels and negative_score < 30.0:
-            semantic_score += 30.0
+        if has_explicit_labels:
+            semantic_score += 35.0
+            negative_score = max(0.0, negative_score - 20.0)
 
         boundary_y = separator_y if separator_y is not None else f_y0
 
@@ -370,7 +377,7 @@ class FooterVerifier:
             "page_number": page_number,
             "layout_score": min(60.0, layout_score),
             "multi_page_score": 0.0,  # Populated in multi-page step
-            "semantic_score": min(40.0, semantic_score),
+            "semantic_score": min(45.0, semantic_score),
             "negative_score": negative_score,
             "boundary_y": boundary_y,
             "has_separator_line": has_separator,
@@ -378,6 +385,8 @@ class FooterVerifier:
             "footer_bbox": footer_bbox,
             "negative_reasons": list(set(negative_reasons)),
             "candidate_texts": candidate_texts,
+            "has_id_pair": has_id_pair,
+            "has_explicit_labels": has_explicit_labels,
         }
 
     def _compute_multi_page_consistency(
@@ -395,24 +404,30 @@ class FooterVerifier:
         valid_pages = [
             p for p in page_prelims
             if p.get("status") != FooterStatus.DOCUMENT_UNREADABLE
-            and p.get("negative_score", 0.0) < 30.0
             and p.get("footer_bbox") is not None
         ]
 
         if len(valid_pages) < 2:
             return {}
 
-        # Check for matching Y positions (within 10 points)
-        y_coords = [p["footer_bbox"].y0 for p in valid_pages]
-
         for p in valid_pages:
             p_num = p["page_number"]
             p_y0 = p["footer_bbox"].y0
-            matching_peers = sum(1 for y in y_coords if abs(y - p_y0) <= 10.0)
+            # Allow variable vertical offsets (up to 80pt) across pages
+            matching_peers = sum(
+                1 for other in valid_pages
+                if other["page_number"] != p_num and (
+                    abs(other["footer_bbox"].y0 - p_y0) <= 80.0
+                    or (p["candidate_texts"] and other["candidate_texts"] and any(
+                        tc in pc or pc in tc for tc in other["candidate_texts"] for pc in p["candidate_texts"]
+                    ))
+                )
+            )
 
             if matching_peers >= 2:
-                # Strong multi-page reinforcement (+25 pts)
                 bonus_map[p_num] = 25.0
+            elif matching_peers >= 1:
+                bonus_map[p_num] = 15.0
             elif matching_peers >= 1:
                 bonus_map[p_num] = 15.0
 

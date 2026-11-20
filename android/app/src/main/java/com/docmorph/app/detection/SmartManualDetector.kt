@@ -254,25 +254,28 @@ class SmartManualDetector(
             negativeReasons.add("Selected area contains ${blocks.size} lines (typical footers are 1-2 lines)")
         }
 
-        if (box[1] >= pageHeight * 0.75f) {
+        if (box[1] >= pageHeight * 0.70f) {
             layoutScore += 25f
-        } else if (box[1] >= pageHeight * 0.65f) {
-            layoutScore += 10f
+        } else if (box[1] <= pageHeight * 0.35f) {
+            // Header / Title block region is valid for student credentials
+            layoutScore += 20f
         } else {
-            negativeScore += 25f
-            negativeReasons.add("Selected area is located in top/middle body region (y0 < 65% page height)")
+            // Middle region: neutral layout score
+            layoutScore += 10f
         }
 
         // 6. Semantic Signals
         val hasIdPair = Regex("""([A-Za-z\s.'-]{3,35})\s*[\(\[]\s*(\d{6,18}|[A-Za-z0-9\-_]{5,20})\s*[\)\]]""").containsMatchIn(combined) ||
                         Regex("""([A-Za-z\s.'-]{3,35})\s*[-–—|]\s*(\d{6,18})""").containsMatchIn(combined)
-        if (hasIdPair && negativeScore < 35f) {
-            semanticScore += 35f
+        if (hasIdPair) {
+            semanticScore += 45f
+            negativeScore = max(0f, negativeScore - 30f)
         }
 
         val hasLabels = Regex("""(?i)\b(?:name|enrollment(?:\s*no\.?)?|roll(?:\s*no\.?)?|student\s*id)\s*:""").containsMatchIn(combined)
-        if (hasLabels && negativeScore < 35f) {
-            semanticScore += 30f
+        if (hasLabels) {
+            semanticScore += 40f
+            negativeScore = max(0f, negativeScore - 20f)
         }
 
         if (negativeScore == 0f) {
@@ -283,7 +286,10 @@ class SmartManualDetector(
 
         val status: FooterStatus
         val conf: Float
-        if (negativeScore >= 40f) {
+        if (hasIdPair || hasLabels) {
+            status = if (netScore >= 35f) FooterStatus.FOOTER_CONFIRMED else FooterStatus.FOOTER_UNCERTAIN
+            conf = min(0.98f, max(0.75f, netScore / 100f))
+        } else if (negativeScore >= 40f) {
             status = FooterStatus.FOOTER_NOT_FOUND
             conf = max(0.85f, min(0.99f, negativeScore / 100f))
         } else if (netScore >= 50f) {
@@ -324,7 +330,7 @@ class SmartManualDetector(
                     id = UUID.randomUUID().toString(),
                     fieldType = "student_name",
                     detectedText = pair.name,
-                    replacementText = savedProfile?.get("fullName"),
+                    replacementText = DetectionOrchestrator.getProfileReplacement("student_name", savedProfile),
                     confidence = conf,
                     pageIndex = pageIndex,
                     normalizedBox = pair.nameBlock.bbox.map { it.toInt() },
@@ -337,11 +343,7 @@ class SmartManualDetector(
             )
 
             // ID
-            val replId = when (pair.identifierType) {
-                "enrollment_number" -> savedProfile?.get("enrollmentNumber")
-                "roll_number" -> savedProfile?.get("rollNumber")
-                else -> savedProfile?.get("studentId")
-            }
+            val replId = DetectionOrchestrator.getProfileReplacement(pair.identifierType, savedProfile)
 
             candidates.add(
                 DetectionCandidate(
@@ -361,53 +363,137 @@ class SmartManualDetector(
             )
         }
 
-        // 2. Single item fallback (when only Name or only ID was selected)
-        if (candidates.isEmpty() && blocks.size == 1) {
+        // 2. Single item / Labeled item fallback (when only Name or only ID was selected)
+        if (candidates.isEmpty() && blocks.isNotEmpty()) {
+            val combinedText = blocks.joinToString(" ") { it.text.trim() }.trim()
             val block = blocks[0]
-            val clean = block.text.trim('(', ')', '[', ']', '-', '|', ',', '.', ':')
 
-            if (unlabelledDetector.isValidStudentName(clean)) {
-                candidates.add(
-                    DetectionCandidate(
-                        id = UUID.randomUUID().toString(),
-                        fieldType = "student_name",
-                        detectedText = clean,
-                        replacementText = savedProfile?.get("fullName"),
-                        confidence = if (isUncertain) 0.65f else 0.88f,
-                        pageIndex = pageIndex,
-                        normalizedBox = block.bbox.map { it.toInt() },
-                        pdfPointBox = block.rawBbox,
-                        fontName = block.fontName,
-                        fontSize = block.fontSize,
-                        pairId = null,
-                        requiresConfirmation = isUncertain
-                    )
-                )
-            } else {
-                val idType = unlabelledDetector.classifyIdentifier(clean)
-                if (idType != null) {
-                    val replId = when (idType) {
-                        "enrollment_number" -> savedProfile?.get("enrollmentNumber")
-                        "roll_number" -> savedProfile?.get("rollNumber")
-                        else -> savedProfile?.get("studentId")
-                    }
+            // Check if labeled
+            val mName = Regex("""(?i)\b(?:student\s*name|candidate\s*name|full\s*name|name)\s*[:\-–—]\s*(.+)""").find(combinedText)
+            val mEnroll = Regex("""(?i)\b(?:enrollment(?:\s*no\.?|\s*number)?|enrol(?:\s*no\.?|\s*number)?|registration(?:\s*no\.?|\s*number)?)\s*[:\-–—]\s*(.+)""").find(combinedText)
+            val mRoll = Regex("""(?i)\b(?:roll(?:\s*no\.?|\s*number)?)\s*[:\-–—]\s*(.+)""").find(combinedText)
+            val mId = Regex("""(?i)\b(?:student\s*id|stu\s*id)\s*[:\-–—]\s*(.+)""").find(combinedText)
 
+            when {
+                mName != null -> {
+                    val clean = mName.groupValues[1].trim(' ', ':', '-', '–', '—', '|', ',', '.', ';')
                     candidates.add(
                         DetectionCandidate(
                             id = UUID.randomUUID().toString(),
-                            fieldType = idType,
+                            fieldType = "student_name",
                             detectedText = clean,
-                            replacementText = replId,
-                            confidence = if (isUncertain) 0.65f else 0.88f,
+                            replacementText = DetectionOrchestrator.getProfileReplacement("student_name", savedProfile),
+                            confidence = 0.95f,
                             pageIndex = pageIndex,
                             normalizedBox = block.bbox.map { it.toInt() },
                             pdfPointBox = block.rawBbox,
                             fontName = block.fontName,
                             fontSize = block.fontSize,
                             pairId = null,
-                            requiresConfirmation = isUncertain
+                            requiresConfirmation = false
                         )
                     )
+                }
+                mEnroll != null -> {
+                    val clean = mEnroll.groupValues[1].trim(' ', ':', '-', '–', '—', '|', ',', '.', ';')
+                    candidates.add(
+                        DetectionCandidate(
+                            id = UUID.randomUUID().toString(),
+                            fieldType = "enrollment_number",
+                            detectedText = clean,
+                            replacementText = DetectionOrchestrator.getProfileReplacement("enrollment_number", savedProfile),
+                            confidence = 0.95f,
+                            pageIndex = pageIndex,
+                            normalizedBox = block.bbox.map { it.toInt() },
+                            pdfPointBox = block.rawBbox,
+                            fontName = block.fontName,
+                            fontSize = block.fontSize,
+                            pairId = null,
+                            requiresConfirmation = false
+                        )
+                    )
+                }
+                mRoll != null -> {
+                    val clean = mRoll.groupValues[1].trim(' ', ':', '-', '–', '—', '|', ',', '.', ';')
+                    candidates.add(
+                        DetectionCandidate(
+                            id = UUID.randomUUID().toString(),
+                            fieldType = "roll_number",
+                            detectedText = clean,
+                            replacementText = DetectionOrchestrator.getProfileReplacement("roll_number", savedProfile),
+                            confidence = 0.95f,
+                            pageIndex = pageIndex,
+                            normalizedBox = block.bbox.map { it.toInt() },
+                            pdfPointBox = block.rawBbox,
+                            fontName = block.fontName,
+                            fontSize = block.fontSize,
+                            pairId = null,
+                            requiresConfirmation = false
+                        )
+                    )
+                }
+                mId != null -> {
+                    val clean = mId.groupValues[1].trim(' ', ':', '-', '–', '—', '|', ',', '.', ';')
+                    candidates.add(
+                        DetectionCandidate(
+                            id = UUID.randomUUID().toString(),
+                            fieldType = "student_id",
+                            detectedText = clean,
+                            replacementText = DetectionOrchestrator.getProfileReplacement("student_id", savedProfile),
+                            confidence = 0.95f,
+                            pageIndex = pageIndex,
+                            normalizedBox = block.bbox.map { it.toInt() },
+                            pdfPointBox = block.rawBbox,
+                            fontName = block.fontName,
+                            fontSize = block.fontSize,
+                            pairId = null,
+                            requiresConfirmation = false
+                        )
+                    )
+                }
+                else -> {
+                    val clean = block.text.trim('(', ')', '[', ']', '-', '|', ',', '.', ':')
+
+                    if (unlabelledDetector.isValidStudentName(clean)) {
+                        candidates.add(
+                            DetectionCandidate(
+                                id = UUID.randomUUID().toString(),
+                                fieldType = "student_name",
+                                detectedText = clean,
+                                replacementText = DetectionOrchestrator.getProfileReplacement("student_name", savedProfile),
+                                confidence = if (isUncertain) 0.65f else 0.88f,
+                                pageIndex = pageIndex,
+                                normalizedBox = block.bbox.map { it.toInt() },
+                                pdfPointBox = block.rawBbox,
+                                fontName = block.fontName,
+                                fontSize = block.fontSize,
+                                pairId = null,
+                                requiresConfirmation = isUncertain
+                            )
+                        )
+                    } else {
+                        val idType = unlabelledDetector.classifyIdentifier(clean)
+                        if (idType != null) {
+                            val replId = DetectionOrchestrator.getProfileReplacement(idType, savedProfile)
+
+                            candidates.add(
+                                DetectionCandidate(
+                                    id = UUID.randomUUID().toString(),
+                                    fieldType = idType,
+                                    detectedText = clean,
+                                    replacementText = replId,
+                                    confidence = if (isUncertain) 0.65f else 0.88f,
+                                    pageIndex = pageIndex,
+                                    normalizedBox = block.bbox.map { it.toInt() },
+                                    pdfPointBox = block.rawBbox,
+                                    fontName = block.fontName,
+                                    fontSize = block.fontSize,
+                                    pairId = null,
+                                    requiresConfirmation = isUncertain
+                                )
+                            )
+                        }
+                    }
                 }
             }
         }

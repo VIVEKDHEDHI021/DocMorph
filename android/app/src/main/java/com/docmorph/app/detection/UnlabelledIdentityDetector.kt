@@ -58,6 +58,29 @@ class UnlabelledIdentityDetector {
 
         // Standalone page number pattern to strictly exclude: "Page 1 of 10", "1 / 5", "Page 2"
         val PAGE_NUMBER_REGEX = Regex("""(?i)^(page\s*\d+(\s*of\s*\d+)?|\d+\s*/\s*\d+|\d{1,3})$""")
+
+        val CODE_AND_TECHNICAL_WORDS = setOf(
+            "plt", "plot", "pyplot", "matplotlib", "numpy", "pandas", "scipy", "sklearn",
+            "seaborn", "tensorflow", "keras", "torch", "cv2", "nltk", "spacy",
+            "import", "from", "as", "def", "class", "return", "self", "none", "true", "false",
+            "print", "input", "open", "read", "write", "close", "range", "len", "type",
+            "int", "str", "float", "bool", "list", "dict", "set", "tuple", "array",
+            "fit", "predict", "transform", "score", "train", "test", "split",
+            "show", "figure", "xlabel", "ylabel", "title", "legend", "grid", "scatter",
+            "hist", "bar", "boxplot", "heatmap", "corr", "head", "tail", "describe",
+            "info", "columns", "index", "values", "iloc", "loc", "drop", "dropna",
+            "fillna", "mean", "median", "mode", "std", "var", "sum", "count",
+            "min", "max", "quantile", "shape", "dtypes", "reset_index", "groupby",
+            "sort_values", "value_counts", "apply", "lambda", "map", "filter",
+            "data", "dataset", "dataframe", "df", "np", "pd", "sns", "tf"
+        )
+    }
+
+    fun isCodeOrTechnicalTerm(text: String): Boolean {
+        val norm = text.lowercase().trim()
+        val tokens = norm.split(Regex("""[^a-z0-9]+""")).filter { it.isNotEmpty() }
+        if (tokens.isEmpty()) return false
+        return tokens.any { CODE_AND_TECHNICAL_WORDS.contains(it) }
     }
 
     fun isAcademicTerm(text: String): Boolean {
@@ -72,13 +95,35 @@ class UnlabelledIdentityDetector {
 
     fun isValidStudentName(nameCandidate: String): Boolean {
         val clean = nameCandidate.trim()
-        if (clean.length < 2 || clean.length > 45) return false
+        if (clean.length < 3 || clean.length > 45) return false
         if (clean.any { it.isDigit() }) return false
         if (!clean.matches(Regex("""^[A-Za-z\s.'-]+$"""))) return false
         if (isAcademicTerm(clean)) return false
+        if (isCodeOrTechnicalTerm(clean)) return false
 
-        val tokens = clean.split(Regex("""[\s.\-]+""")).filter { it.isNotEmpty() }
+        // Disallow dots between multi-letter tokens (e.g. "plt.plot", "foo.bar")
+        if (Regex("""[A-Za-z]{2,}\.[A-Za-z]""").containsMatchIn(clean)) return false
+
+        val tokens = clean.split(Regex("""[\s-]+""")).filter { it.isNotEmpty() }
         if (tokens.size < 2 || tokens.size > 5) return false
+
+        for (token in tokens) {
+            val stripped = token.trimEnd('.').lowercase()
+            if (CODE_AND_TECHNICAL_WORDS.contains(stripped)) return false
+            if (ACADEMIC_STOP_WORDS.contains(stripped)) return false
+        }
+
+        // Capitalization check:
+        // Human student names in academic documents are either Title Case ("Vivek Dhedhi") or ALL UPPERCASE ("VIVEK DHEDHI").
+        // Purely lowercase strings (like "plt.plot", "test name") are code or prose, NOT student names.
+        val isAllUpper = clean.all { !it.isLetter() || it.isUpperCase() }
+        val isTitleCase = tokens.all { token ->
+            val firstLetter = token.firstOrNull { it.isLetter() }
+            firstLetter != null && firstLetter.isUpperCase()
+        }
+
+        if (!isAllUpper && !isTitleCase) return false
+
         return true
     }
 

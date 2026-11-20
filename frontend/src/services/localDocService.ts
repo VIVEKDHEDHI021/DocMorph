@@ -343,9 +343,18 @@ class LocalDocService {
 
       this.candidateCache.set(documentId, analysis.candidates);
 
-      // Convert candidates into DocumentDetectionResponse
-      const fields: DetectionField[] = analysis.candidates.map((c) => {
-        const occ: DetectionOccurrence = {
+      // Convert candidates into DocumentDetectionResponse with aggregated multi-page occurrences
+      const groups = new Map<string, typeof analysis.candidates>();
+      for (const c of analysis.candidates) {
+        const key = `${c.fieldType}::${c.detectedText.trim().toLowerCase()}`;
+        const list = groups.get(key) || [];
+        list.push(c);
+        groups.set(key, list);
+      }
+
+      const fields: DetectionField[] = Array.from(groups.values()).map((candGroup) => {
+        const primary = candGroup[0];
+        const occurrences: DetectionOccurrence[] = candGroup.map((c) => ({
           page_number: c.pageIndex + 1,
           raw_text: c.detectedText,
           bbox: {
@@ -366,29 +375,33 @@ class LocalDocService {
             x1: c.normalizedBox[2],
             y1: c.normalizedBox[3],
           },
-        };
+        }));
 
-        const fieldType = c.fieldType as DetectionField['field_type'];
+        const fieldType = primary.fieldType as DetectionField['field_type'];
+        const avgConfidence = candGroup.reduce((sum, c) => sum + c.confidence, 0) / candGroup.length;
         const confLevel =
-          c.confidence >= 0.8 ? 'high' : c.confidence >= 0.5 ? 'medium' : 'low';
+          avgConfidence >= 0.8 ? 'high' : avgConfidence >= 0.5 ? 'medium' : 'low';
+        const requiresConfirmation = candGroup.some((c) => c.requiresConfirmation);
+
+        const pages = [...new Set(candGroup.map((c) => c.pageIndex + 1))].sort((a, b) => a - b);
 
         return {
-          id: c.id,
-          field_id: c.id,
+          id: primary.id,
+          field_id: primary.id,
           field_type: fieldType,
-          original_value: c.detectedText,
-          suggested_value: c.detectedText,
-          corrected_value: c.replacementText || null,
-          confidence: c.confidence,
+          original_value: primary.detectedText,
+          suggested_value: primary.detectedText,
+          corrected_value: primary.replacementText || null,
+          confidence: avgConfidence,
           confidence_level: confLevel,
-          review_status: c.requiresConfirmation ? 'pending' : 'confirmed',
-          is_ambiguous: c.requiresConfirmation,
-          reasons: c.requiresConfirmation
+          review_status: requiresConfirmation ? 'pending' : 'confirmed',
+          is_ambiguous: requiresConfirmation,
+          reasons: requiresConfirmation
             ? ['Requires confirmation before replacing']
             : ['High confidence student information'],
-          occurrences_count: 1,
-          pages: [c.pageIndex + 1],
-          occurrences: [occ],
+          occurrences_count: candGroup.length,
+          pages: pages,
+          occurrences: occurrences,
         };
       });
 
@@ -678,17 +691,21 @@ class LocalDocService {
     const auto_replacement_plan: { field_id: string; field_type: string; new_value: string }[] = [];
 
     for (const field of detections.fields) {
+      const profileId = profile.student_id || profile.enrollment_number || profile.roll_number || '';
+      const profileRoll = profile.roll_number || profile.enrollment_number || profile.student_id || '';
+      const profileEnroll = profile.enrollment_number || profile.student_id || profile.roll_number || '';
+
       let profileValue = '';
       if (field.field_type === 'student_name') profileValue = profile.full_name;
-      else if (field.field_type === 'enrollment_number') profileValue = profile.enrollment_number;
-      else if (field.field_type === 'roll_number') profileValue = profile.roll_number || '';
-      else if (field.field_type === 'student_id') profileValue = profile.student_id || '';
+      else if (field.field_type === 'enrollment_number') profileValue = profileEnroll;
+      else if (field.field_type === 'roll_number') profileValue = profileRoll;
+      else if (field.field_type === 'student_id') profileValue = profileId;
 
       const isMatching =
         profileValue &&
         field.original_value.trim().toLowerCase() === profileValue.trim().toLowerCase();
 
-      comparisons[field.field_type] = {
+      comparisons[field.field_id] = {
         field_type: field.field_type,
         detected_value: field.original_value,
         profile_value: profileValue,
@@ -698,6 +715,8 @@ class LocalDocService {
         auto_action_eligible: !!profileValue,
         reason: isMatching ? 'Matches profile' : 'Different value detected',
       };
+      // Backward compatibility for components indexing by field_type
+      comparisons[field.field_type] = comparisons[field.field_id];
 
       if (profileValue) {
         auto_replacement_plan.push({
@@ -721,6 +740,7 @@ class LocalDocService {
 
   /**
    * Executes offline PDF personalization using native PDFBox content-stream rewriting.
+   * Expands confirmed fields to ALL underlying page occurrences.
    */
   async personalize(
     documentId: string,
@@ -728,19 +748,64 @@ class LocalDocService {
   ): Promise<JobDetail> {
     if (isNativePlatform()) {
       const cached = this.candidateCache.get(documentId) || [];
-      const confirmedCandidates = replacements.map((r) => {
-        const c = cached.find((cand) => cand.id === r.field_id);
-        return {
-          pageIndex: c ? c.pageIndex : 0,
-          fieldType: r.field_type,
-          originalValue: c ? c.detectedText : '',
-          replacementText: r.new_value,
-          pdfPointBox: c ? c.pdfPointBox : [50, 750, 250, 770],
-          pairId: c?.pairId || null,
-          fontName: c?.fontName || null,
-          fontSize: c?.fontSize || 10,
-        };
-      });
+      const cachedResp = this.detectionResponseCache.get(documentId);
+      const confirmedCandidates: any[] = [];
+      const handledCandidateIds = new Set<string>();
+
+      for (const r of replacements) {
+        const matchingField = cachedResp?.fields.find((f) => f.field_id === r.field_id || f.id === r.field_id);
+
+        // Find ALL candidate occurrences across all pages corresponding to this field
+        const matchingCandidates = cached.filter((cand) => {
+          if (matchingField) {
+            return (
+              cand.fieldType === matchingField.field_type &&
+              cand.detectedText.trim().toLowerCase() === matchingField.original_value.trim().toLowerCase()
+            );
+          }
+          return cand.id === r.field_id || cand.fieldType === r.field_type;
+        });
+
+        for (const c of matchingCandidates) {
+          if (handledCandidateIds.has(c.id)) continue;
+          handledCandidateIds.add(c.id);
+
+          confirmedCandidates.push({
+            pageIndex: c.pageIndex,
+            fieldType: r.field_type,
+            originalValue: c.detectedText,
+            replacementText: r.new_value,
+            pdfPointBox: c.pdfPointBox,
+            pairId: c.pairId || null,
+            fontName: c.fontName || null,
+            fontSize: c.fontSize || 10,
+            isOcr: c.isOcr || false,
+          });
+
+          // Check if candidate belongs to a pair on this page: ensure partner candidate is included so unified pair isn't broken
+          if (c.pairId) {
+            const partner = cached.find(
+              (p) => p.pairId === c.pairId && p.id !== c.id && p.pageIndex === c.pageIndex
+            );
+            if (partner && !handledCandidateIds.has(partner.id)) {
+              const partnerReplacement = replacements.find((pr) => pr.field_type === partner.fieldType);
+              const partnerVal = partnerReplacement ? partnerReplacement.new_value : partner.detectedText;
+              handledCandidateIds.add(partner.id);
+              confirmedCandidates.push({
+                pageIndex: partner.pageIndex,
+                fieldType: partner.fieldType,
+                originalValue: partner.detectedText,
+                replacementText: partnerVal,
+                pdfPointBox: partner.pdfPointBox,
+                pairId: partner.pairId,
+                fontName: partner.fontName || null,
+                fontSize: partner.fontSize || 10,
+                isOcr: partner.isOcr || false,
+              });
+            }
+          }
+        }
+      }
 
       const res = await DocMorphNative.personalizeDocument({
         documentId,
@@ -748,6 +813,11 @@ class LocalDocService {
       });
 
       await this.refreshNativeCache();
+
+      const vr = (res as any).verificationReport;
+      const details = vr?.pageResults?.map(
+        (pr: any) => `Page ${pr.pageNumber}: ${pr.status}${pr.errors?.length ? ` (${pr.errors.join(', ')})` : ''}`
+      ) || res.warnings || [];
 
       const job: JobDetail = {
         job_id: `job_${documentId}`,
@@ -762,14 +832,14 @@ class LocalDocService {
         verification_report: {
           is_valid: res.verificationPassed,
           page_count_matches: true,
-          expected_pages: 1,
-          actual_pages: 1,
+          expected_pages: vr?.pageResults?.length || 1,
+          actual_pages: vr?.pageResults?.length || 1,
           replacements_verified: res.totalReplaced,
           total_replacements: res.totalReplaced,
           purged_values_absent: true,
           labels_intact: true,
           unrelated_content_intact: true,
-          details: res.warnings || [],
+          details: details,
         },
         download_available: true,
         started_at: new Date().toISOString(),

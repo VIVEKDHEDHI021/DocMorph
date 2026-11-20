@@ -153,8 +153,8 @@ class PdfPersonalizerService(private val context: Context) {
                             )
                         )
 
-                        verificationTargets.add(VerificationTarget(pageIdx, nameCand.originalValue, nameCand.replacementValue))
-                        verificationTargets.add(VerificationTarget(pageIdx, idCand.originalValue, idCand.replacementValue))
+                        verificationTargets.add(VerificationTarget(pageIdx, nameCand.originalValue, nameCand.replacementValue, nameCand.rawBbox))
+                        verificationTargets.add(VerificationTarget(pageIdx, idCand.originalValue, idCand.replacementValue, idCand.rawBbox))
                         totalReplaced += 2
                     } else {
                         // Orphaned pair member falls back to standalone
@@ -195,7 +195,7 @@ class PdfPersonalizerService(private val context: Context) {
                         )
                     )
 
-                    verificationTargets.add(VerificationTarget(pageIdx, cand.originalValue, cand.replacementValue))
+                    verificationTargets.add(VerificationTarget(pageIdx, cand.originalValue, cand.replacementValue, cand.rawBbox))
                     totalReplaced++
                 }
 

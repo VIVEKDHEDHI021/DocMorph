@@ -122,7 +122,11 @@ class OutputVerifier:
 
                     # 4b. Verify old original value is absent at the occurrence region
                     checks_performed += 1
-                    if clip_rect:
+                    if (
+                        clip_rect
+                        and rep_item.original_value.strip()
+                        and rep_item.original_value.strip().lower() != rep_item.new_value.strip().lower()
+                    ):
                         found_old_at_occ = page.search_for(rep_item.original_value, clip=clip_rect)
                         if found_old_at_occ:
                             errors.append(

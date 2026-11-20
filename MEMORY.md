@@ -53,3 +53,20 @@
 - Verified candidates from `manualDetect` merge seamlessly into `candidateCache` in `DocMorphPlugin.kt` and `localDocService.ts`.
 - Integrated with `PdfPersonalizerService.kt` / `ContentStreamRedactor.kt` and Python reference `PDFReplacer`.
 - Full regression suite passing: 168/168 tests (100% pass rate).
+
+### Phase F: Multi-Page Detection & Complete Footer Replacement Fix (Completed)
+- Resolved Bug 1 (incomplete replacement on multi-page PDFs) and Bug 2 (incomplete detection across pages).
+- Implemented 4-pass page-by-page detection with cross-page identity propagation in `DetectionOrchestrator.kt` and `detection_engine.py`.
+- Made footer boundary detection adaptive to variable vertical heights and page dimensions (Letter, A4, Legal).
+- Preserved occurrence-level data in `localDocService.ts` and expanded replacements across all verified page occurrences.
+- Extended `ContentStreamRedactor.kt` to recursively traverse and rewrite shared Form XObjects (`PDFormXObject`).
+- Added per-page verification status breakdown in `OutputVerifier.kt`.
+- Built 14-scenario regression suite in `tests/test_multipage_detection_replacement.py` (14/14 passed, full suite 182/182 passed).
+
+### Phase G: Liquid Glass Mobile UI & Workspace Redesign (Completed)
+- Integrated mobile layout and design system from `stitch_docmorph_mobile_app_ui`.
+- Added Inter typography and Google Material Symbols Outlined.
+- Configured semantic color palette (`surface`, `surface-container-*`, `primary`, `secondary`, `tertiary`).
+- Upgraded `CompactHeader.tsx`, `FloatingGlassNavigation.tsx`, and `DocumentCard.tsx`.
+- Redesigned `PdfViewer.tsx` and `WorkspacePage.tsx` with continuous render canvas, canvas control pills, and docked liquid glass bottom action bar.
+- Web assets synchronized to Capacitor Android sandbox (`npx cap copy android`).
